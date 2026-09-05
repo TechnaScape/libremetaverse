@@ -1004,7 +1004,7 @@ namespace LibreMetaverse
             Client.Network.RegisterCallback(PacketType.ScriptControlChange, ScriptControlChangeHandler);
             // Camera Constraint (probably needs to move to AgentManagerCamera TODO:
             Client.Network.RegisterCallback(PacketType.CameraConstraint, CameraConstraintHandler);
-            Client.Network.RegisterCallback(PacketType.ScriptSensorReply, AvatarSitResponseHandler);
+            Client.Network.RegisterCallback(PacketType.ScriptSensorReply, ScriptSensorReplyHandler);
             Client.Network.RegisterCallback(PacketType.AvatarSitResponse, AvatarSitResponseHandler);
             // Process mute list update message
             Client.Network.RegisterCallback(PacketType.MuteListUpdate, MuteListUpdateHandler);
@@ -2570,7 +2570,7 @@ namespace LibreMetaverse
                     // script control change messages, ie: when an in-world LSL script wants to take control of your agent.
                     try { Client.Network.UnregisterCallback(PacketType.ScriptControlChange, ScriptControlChangeHandler); } catch { }
                     try { Client.Network.UnregisterCallback(PacketType.CameraConstraint, CameraConstraintHandler); } catch { }
-                    try { Client.Network.UnregisterCallback(PacketType.ScriptSensorReply, AvatarSitResponseHandler); } catch { }
+                    try { Client.Network.UnregisterCallback(PacketType.ScriptSensorReply, ScriptSensorReplyHandler); } catch { }
                     try { Client.Network.UnregisterCallback(PacketType.AvatarSitResponse, AvatarSitResponseHandler); } catch { }
                     // Process mute list update message
                     try { Client.Network.UnregisterCallback(PacketType.MuteListUpdate, MuteListUpdateHandler); } catch { }
