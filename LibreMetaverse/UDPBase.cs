@@ -277,12 +277,18 @@ namespace LibreMetaverse
                 var socket = udpSocket;
                 if (socket == null) return;
 
-                socket.SendTo(
+                int bytesSent = socket.SendTo(
                     buf.Data,
                     0,
                     buf.DataLength,
                     SocketFlags.None,
                     buf.RemoteEndPoint);
+
+                // Notify the subclass. Without this, Stats.GetSentPackets/GetSentBytes,
+                // GetOutgoingBPS and the public NetworkManager.PacketSent event never see a
+                // single packet -- outbound traffic reads as zero forever, which makes a healthy
+                // circuit indistinguishable from a mute one.
+                PacketSent(buf, bytesSent);
             }
             catch (SocketException) { }
             catch (ObjectDisposedException) { }
