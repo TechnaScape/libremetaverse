@@ -621,6 +621,12 @@ namespace LibreMetaverse
         /// type of login error that occurred</summary>
         public string LoginErrorKey { get; private set; } = string.Empty;
 
+        /// <summary>
+        /// [SLUnity] When true, the raw login request and reply are logged at Warn level.
+        /// Diagnostic only: the reply contains session tokens, so leave this off by default.
+        /// </summary>
+        public static bool SLUnityLoginTrace = false;
+
         /// <summary>During login this contains a descriptive version of 
         /// LoginStatusCode. After a successful login this will contain the 
         /// message of the day, and after a failed login a descriptive error 
@@ -1071,7 +1077,30 @@ namespace LibreMetaverse
         {
             try
             {
+                // [SLUnity diagnostic] Log the exact request and reply. A rejected login names a
+                // reason but not a field, so without this there is no way to tell which value the
+                // grid objected to. Password is redacted; everything else is already public.
+                if (SLUnityLoginTrace)
+                {
+                    var redacted = new OSDMap();
+                    foreach (string key in loginLLSD.Keys)
+                        redacted[key] = key == "passwd" ? OSD.FromString("<redacted>") : loginLLSD[key];
+                    Logger.Warn("[SLUnity] login request -> " + loginUri + " | "
+                                + OSDParser.SerializeLLSDXmlString(redacted));
+                }
+
                 var (resp, data) = await Client.HttpCapsClient.PostAsync(loginUri, OSDFormat.Xml, loginLLSD, token).ConfigureAwait(false);
+
+                if (SLUnityLoginTrace)
+                {
+                    Logger.Warn("[SLUnity] login HTTP status = "
+                                + (resp == null ? "(null response)" : ((int)resp.StatusCode).ToString())
+                                + ", body bytes = " + (data?.Length ?? 0));
+                    if (data != null)
+                        Logger.Warn("[SLUnity] login reply <- "
+                                    + System.Text.Encoding.UTF8.GetString(data, 0, System.Math.Min(data.Length, 4000)));
+                }
+
                 await LoginReplyLLSDHandler(resp, data, null).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
