@@ -2652,6 +2652,28 @@ namespace LibreMetaverse
 
             Logger.Debug($"{worn.Count} inventory items in 'Current Outfit' folder", Client);
 
+            // [SLUnity] An empty result here is not an empty outfit -- it is very often a failed
+            // fetch. RequestAgentWornAsync returns an empty list rather than null on both of its
+            // failure paths (COF not found, contents not returned), which makes the `worn == null`
+            // guard above unreachable, and FolderContentsAsync itself returns an empty list rather
+            // than null when FetchInventoryDescendents2 is unavailable. All three end here.
+            //
+            // Falling through would build no ObjectDataBlocks and then send
+            // RezMultipleAttachmentsFromInv with FirstDetachAll = true and TotalObjects = 0, which
+            // asks the simulator to take everything off and put nothing on. On login that turns a
+            // transient inventory failure into an agent that is actually, permanently naked on the
+            // grid -- and nothing observes the result, so it is silent.
+            //
+            // An account with a genuinely empty Current Outfit Folder is not a case worth serving:
+            // it is already wearing nothing, so declining to send changes nothing for it.
+            if (worn.Count == 0)
+            {
+                Logger.Warn("'Current Outfit' folder came back empty; not sending "
+                            + "RezMultipleAttachmentsFromInv, which would detach everything and "
+                            + "attach nothing. Inventory may not have been fetched.", Client);
+                return;
+            }
+
             foreach (var inventoryBase in worn.Where(inventoryBase => inventoryBase != null))
             {
                 Logger.Trace($"'{inventoryBase.Name}' found in 'Current Outfit' folder ({inventoryBase.GetType().Name})", Client);
