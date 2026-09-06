@@ -1083,7 +1083,29 @@ namespace LibreMetaverse.PrimMesher
                 for (var i = 0; i < numOuterVerts - 1; i++)
                     faceNumbers.Add(sides < 5 && i <= sides ? faceNum++ : faceNum);
 
-                faceNumbers.Add(hasProfileCut ? -1 : faceNum++);
+                // The last profile vertex closes the loop. On an uncut, unhollowed low-sided
+                // profile it is a *duplicate* of vertex 0 -- genNGon's equivalent pushes the same
+                // point with a different U -- so the quad the extrusion builds from it is
+                // zero-area. Giving it a face number of its own is what makes a box report seven
+                // faces where Second Life has six, and the cost is not the empty slot: the bottom
+                // cap and everything after it shift by one, and LLPrimitive::unpackTEMessage takes
+                // the face count from the tessellator because the wire does not carry one. So
+                // every TextureEntry past the sides lands on the wrong face.
+                //
+                // The reference does not have this problem because it never walks the profile
+                // pairwise -- LLProfile::generate emits one face per quarter of parameter space
+                // for a square (llvolume.cpp:800-803) and the duplicate is consumed as the far
+                // edge of the last side.
+                //
+                // Narrowed to the case that is provably a duplicate. A cut profile's last vertex
+                // is a genuine cut edge and is numbered below; a hollow one runs through a
+                // different set of adjustments and is left exactly as it was.
+                if (hasProfileCut)
+                    faceNumbers.Add(-1);
+                else if (sides < 5 && !hasHollow)
+                    faceNumbers.Add(faceNum - 1);
+                else
+                    faceNumbers.Add(faceNum++);
 
                 if (sides > 4 && (hasHollow || hasProfileCut))
                     faceNum++;
