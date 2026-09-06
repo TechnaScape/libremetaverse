@@ -2054,6 +2054,62 @@ namespace LibreMetaverse.PrimMesher
 
                     lastCutNormal1 = profile.cutNormal1; lastCutNormal2 = profile.cutNormal2; lastV = thisV;
 
+                    // Bottom cap. The profile's own faces are wound for the top -- its faceNormal
+                    // starts at (0,0,1) -- so the first path node needs them reversed and their
+                    // normal negated. That is exactly what FlipNormals() does, but calling it here
+                    // would mutate the shared profile and leave the top cap inside out, so its
+                    // three effects (swap v1/v3, negate faceNormal, mirror V) are applied inline.
+                    //
+                    // Without this the viewerFaces list has no bottom at all: every linear-extruded
+                    // prim renders with an open underside, and profile.bottomFaceNumber and
+                    // FlipNormals() are both computed and then never used by anything.
+                    if (needEndFaces && nodeIndex == 0 && viewerMode)
+                    {
+                        var bottomNormal = profile.faceNormal;
+                        bottomNormal.X = -bottomNormal.X;
+                        bottomNormal.Y = -bottomNormal.Y;
+                        bottomNormal.Z = -bottomNormal.Z;
+
+                        for (var fi = 0; fi < profile.faces.Count; fi++)
+                        {
+                            var f = profile.faces[fi];
+
+                            var bv = new ViewerFace(profile.bottomFaceNumber);
+
+                            // v1 and v3 swapped: the reversal that makes the triangle face down.
+                            bv.v1 = tmp[f.v3];
+                            bv.v2 = tmp[f.v2];
+                            bv.v3 = tmp[f.v1];
+
+                            bv.coordIndex1 = f.v3 + coordsLen;
+                            bv.coordIndex2 = f.v2 + coordsLen;
+                            bv.coordIndex3 = f.v1 + coordsLen;
+
+                            bv.n1 = bottomNormal;
+                            bv.n2 = bottomNormal;
+                            bv.n3 = bottomNormal;
+
+                            bv.uv1 = profile.faceUVs[f.v3];
+                            bv.uv2 = profile.faceUVs[f.v2];
+                            bv.uv3 = profile.faceUVs[f.v1];
+
+                            // The V mirror from FlipNormals, so the bottom is not a copy of the
+                            // top read the same way round.
+                            bv.uv1.V = 1.0f - bv.uv1.V;
+                            bv.uv2.V = 1.0f - bv.uv2.V;
+                            bv.uv3.V = 1.0f - bv.uv3.V;
+
+                            if (pathType == PathType.Linear)
+                            {
+                                bv.uv1.Flip();
+                                bv.uv2.Flip();
+                                bv.uv3.Flip();
+                            }
+
+                            viewerFaces.Add(bv);
+                        }
+                    }
+
                     if (needEndFaces && nodeIndex == path.pathNodes.Count - 1 && viewerMode)
                     {
                         var faceNormal = profile.faceNormal;
