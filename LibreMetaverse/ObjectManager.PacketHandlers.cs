@@ -770,7 +770,24 @@ namespace LibreMetaverse
                     {
                         prim.TreeSpecies = 0;
 
-                        int size = block.Data[i++];
+                        // Two lengths, both U32, and this used to read one byte.
+                        //
+                        // The reference is llviewerobject.cpp:1847-1852: it unpacks a U32
+                        // "ScratchPadSize" and then calls unpackBinaryData, which reads its OWN
+                        // U32 length before the payload (lldatapacker.cpp). So the wire carries
+                        // 4 + 4 + length bytes, not 1 + length.
+                        //
+                        // Everything after this block in a compressed update is positional --
+                        // floating text, the media URL, the particle system, the extra parameters
+                        // and the whole TextureEntry -- so reading the wrong width does not lose
+                        // the scratch pad, it shifts every one of those. The symptom is a prim
+                        // with the wrong shape and the wrong textures, on exactly the objects that
+                        // carry scratch-pad data, and nothing anywhere reports it.
+                        i += 4;
+
+                        int size = (int)Utils.BytesToUInt(block.Data, i);
+                        i += 4;
+
                         //prim.ScratchPad = new byte[size];
                         //Buffer.BlockCopy(block.Data, i, prim.ScratchPad, 0, size);
                         i += size;
