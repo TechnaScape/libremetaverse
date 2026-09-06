@@ -1731,7 +1731,16 @@ namespace LibreMetaverse.PrimMesher
             var steps = 1;
 
             var length = pathCutEnd - pathCutBegin;
-            var twistTotal = twistEnd - twistBegin;
+
+            // PrimMesh.twistBegin/twistEnd are whole DEGREES; Path.twistBegin/twistEnd are
+            // RADIANS. Passing one straight into the other multiplies every twist in the world by
+            // 180/pi -- a half-turn prim becomes fifty-seven revolutions -- and it also feeds
+            // degrees to the step estimate below, whose 3.66 is calibrated for radians in
+            // Path.Create, so the mesh is built with hundreds of layers it does not need.
+            var twistBeginRadians = twistBegin / 360.0f * twoPi;
+            var twistEndRadians = twistEnd / 360.0f * twoPi;
+
+            var twistTotal = twistEndRadians - twistBeginRadians;
             var twistTotalAbs = Math.Abs(twistTotal);
             if (twistTotalAbs > 0.01f)
                 steps += (int)(twistTotalAbs * 3.66); //  dahlia's magic number
@@ -1867,8 +1876,8 @@ namespace LibreMetaverse.PrimMesher
 
             var path = new Path
             {
-                twistBegin = twistBegin,
-                twistEnd = twistEnd,
+                twistBegin = twistBeginRadians,
+                twistEnd = twistEndRadians,
                 topShearX = topShearX,
                 topShearY = topShearY,
                 pathCutBegin = pathCutBegin,
