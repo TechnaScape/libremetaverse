@@ -2369,7 +2369,13 @@ namespace LibreMetaverse
 
             foreach (var material in materials)
             {
-                array.Add(material);
+                // BINARY, not an LLSD UUID. LLMaterialID::asLLSD returns an LLSD::Binary of the
+                // sixteen raw bytes (llmaterialid.cpp:77-85) and the simulator matches on that, so
+                // an OSDUUID -- which serialises as <uuid>...</uuid> rather than <binary>...
+                // </binary> -- matches nothing at all. The capability then answers with an empty
+                // set rather than an error, so every material silently fails to arrive and the
+                // only symptom is content that renders without its normal and specular maps.
+                array.Add(OSD.FromBinary(material.GetBytes()));
             }
 
             OSDMap request = new OSDMap(new Dictionary<string, OSD>
