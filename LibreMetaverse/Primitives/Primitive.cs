@@ -471,6 +471,106 @@ namespace LibreMetaverse
         /// <summary>
         /// Information on the light properties of a primitive as texture map
         /// </summary>
+        /// <summary>
+        /// The GLTF (PBR) material each face of a prim renders with.
+        /// </summary>
+        /// <remarks>
+        /// <para>Carried as an ExtraParams block of type
+        /// <see cref="ExtraParamType.RenderMaterial"/> rather than in the TextureEntry, and it is
+        /// the ONLY place a face's base PBR material id appears. A face's
+        /// <see cref="TextureEntryFace.MaterialOverride"/> carries per-face edits on top of it,
+        /// which means a viewer that reads only the override receives adjustments to a material it
+        /// has never been told about.</para>
+        ///
+        /// <para>The wire format is <c>LLRenderMaterialParams::unpack</c>,
+        /// <c>llprimitive.cpp:2356</c>: a <c>U8</c> count followed by that many
+        /// <c>(U8 face index, UUID material)</c> pairs. The simulator caps it at fourteen entries
+        /// because the whole block has to fit in 255 bytes (<c>:2344</c>), so a prim with more
+        /// than fourteen PBR faces cannot describe them all — a limit of the protocol, not of this
+        /// decode.</para>
+        /// </remarks>
+        public class RenderMaterialData
+        {
+            /// <summary>One face's material.</summary>
+            public struct Entry
+            {
+                /// <summary>Which face, indexed the same way a TextureEntry is.</summary>
+                public byte FaceIndex;
+
+                /// <summary>The GLTF material asset.</summary>
+                public UUID MaterialID;
+            }
+
+            /// <summary>The faces that name a material. Faces absent from this list have none.</summary>
+            public Entry[] Entries = Array.Empty<Entry>();
+
+            /// <summary>Default constructor</summary>
+            public RenderMaterialData()
+            {
+            }
+
+            /// <summary>
+            /// Decodes the block, keeping only the entries that are wholly present.
+            /// </summary>
+            /// <remarks>
+            /// A truncated block yields the entries that fit rather than throwing. The count byte
+            /// is server-supplied and a short read here would take down the whole object update,
+            /// which is a much worse outcome than one face missing its material.
+            /// </remarks>
+            public RenderMaterialData(byte[] data, int pos)
+            {
+                if (data == null || pos >= data.Length) { return; }
+
+                int count = data[pos++];
+                var entries = new System.Collections.Generic.List<Entry>(count);
+
+                for (int i = 0; i < count; i++)
+                {
+                    if (pos + 17 > data.Length) { break; }
+
+                    entries.Add(new Entry
+                    {
+                        FaceIndex = data[pos],
+                        MaterialID = new UUID(data, pos + 1)
+                    });
+
+                    pos += 17;
+                }
+
+                Entries = entries.ToArray();
+            }
+
+            /// <summary>The material for a face, or <see cref="UUID.Zero"/> when it names none.</summary>
+            public UUID GetMaterial(int faceIndex)
+            {
+                for (int i = 0; i < Entries.Length; i++)
+                {
+                    if (Entries[i].FaceIndex == faceIndex) { return Entries[i].MaterialID; }
+                }
+
+                return UUID.Zero;
+            }
+
+            /// <summary>Serialises back to the wire format.</summary>
+            public byte[] GetBytes()
+            {
+                int count = Entries.Length < 14 ? Entries.Length : 14;
+                var bytes = new byte[1 + count * 17];
+
+                bytes[0] = (byte)count;
+
+                for (int i = 0; i < count; i++)
+                {
+                    int at = 1 + i * 17;
+
+                    bytes[at] = Entries[i].FaceIndex;
+                    Entries[i].MaterialID.ToBytes(bytes, at + 1);
+                }
+
+                return bytes;
+            }
+        }
+
         public class LightImage
         {
             /// <summary></summary>
@@ -865,6 +965,8 @@ namespace LibreMetaverse
         public LightData Light;
         /// <summary></summary>
         public LightImage LightMap;
+        /// <summary>Per-face GLTF (PBR) material ids, or null when the prim has none.</summary>
+        public RenderMaterialData RenderMaterials;
         /// <summary></summary>
         public SculptData? Sculpt;
         /// <summary>Extended mesh parameter flags (PARAMS_EXTENDED_MESH = 0x70)</summary>
@@ -1339,6 +1441,12 @@ namespace LibreMetaverse
                 else if (type == ExtraParamType.ExtendedMesh)
                 {
                     ExtendedMeshFlags = Utils.BytesToUInt(data, i);
+                }
+                else if (type == ExtraParamType.RenderMaterial)
+                {
+                    // The base GLTF material of each face. Without this the TextureEntry's
+                    // MaterialOverride is an adjustment to a material nothing ever named.
+                    RenderMaterials = new RenderMaterialData(data, i);
                 }
 
                 i += (int)paramLength;
