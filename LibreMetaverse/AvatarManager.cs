@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) 2006-2016, openmetaverse.co
  * Copyright (c) 2021-2025, Sjofn LLC.
  * All rights reserved.
@@ -1195,7 +1195,8 @@ namespace LibreMetaverse
                 appearanceVersion,
                 COFVersion,
                 appearanceFlags,
-                childCount));
+                childCount,
+                hoverHeight));
          }
 
         /// <summary>Process an incoming packet and raise the appropriate events</summary>
@@ -1749,6 +1750,19 @@ namespace LibreMetaverse
         public int ChildCount { get; }
 
         /// <summary>
+        /// The avatar's hover offset, from the packet's AppearanceHover block, or
+        /// <see cref="Vector3.Zero"/> when it carries none.
+        /// </summary>
+        /// <remarks>
+        /// The value is also written onto <see cref="Avatar.HoverHeight"/>, but only for an avatar
+        /// already present in <see cref="Simulator.ObjectsAvatars"/> -- an appearance that arrives
+        /// before the avatar's own object update matches nothing there and is lost, with no
+        /// re-request. Carrying it on the event as well is what lets a consumer keep it against the
+        /// avatar id and apply it whenever the avatar turns up.
+        /// </remarks>
+        public Vector3 HoverHeight { get; }
+
+        /// <summary>
         /// Construct a new instance of the AvatarAppearanceEventArgs class
         /// </summary>
         /// <param name="sim">The simulator request was from</param>
@@ -1761,10 +1775,13 @@ namespace LibreMetaverse
         /// <param name="COFVersion">Current outfit folder version</param>
         /// <param name="appearanceFlags">Appearance Flags</param>
         /// <param name="childCount">Child count</param>
+        /// <param name="hoverHeight">The avatar's hover offset, from the AppearanceHover block</param>
         public AvatarAppearanceEventArgs(Simulator sim, UUID avatarID, bool isTrial, Primitive.TextureEntryFace defaultTexture,
             Primitive.TextureEntryFace[] faceTextures, List<byte> visualParams,
-            byte appearanceVersion, int COFVersion, AppearanceFlags appearanceFlags, int childCount)
+            byte appearanceVersion, int COFVersion, AppearanceFlags appearanceFlags, int childCount,
+            Vector3 hoverHeight = default)
         {
+            this.HoverHeight = hoverHeight;
             this.Simulator = sim;
             this.AvatarID = avatarID;
             this.IsTrial = isTrial;
