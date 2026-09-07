@@ -133,7 +133,18 @@ namespace LibreMetaverse
             }
             catch (Exception ex)
             {
-                Logger.Warn("Failed to parse GltfMaterialOverride payload", ex, Client);
+                // The payload itself, truncated, because the exception alone has never been enough
+                // to fix this. The reference decodes the same bytes with LLSDSerialize::fromNotation
+                // (llgltfmateriallist.cpp:184), and every key it then reads -- tex, bc, ec, mf, rf,
+                // am (llgltfmaterial.cpp:759-816) -- is a simple type with no binary anywhere. So
+                // the format is right and the difference is in this parser or in the bytes, and
+                // neither is deducible by reading either one.
+                string payload = e.Data == null
+                    ? "<null>"
+                    : Utils.BytesToString(e.Data, 0, Math.Min(e.Data.Length, 512));
+
+                Logger.Warn($"Failed to parse GltfMaterialOverride payload "
+                            + $"({(e.Data == null ? 0 : e.Data.Length)} bytes): {payload}", ex, Client);
                 return;
             }
 
