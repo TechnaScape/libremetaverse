@@ -322,41 +322,73 @@ namespace LibreMetaverse.StructuredData
 
         private static OSD DeserializeLLSDNotationArray(StringReader reader)
         {
-            int character;
             OSDArray osdArray = new OSDArray();
-            while (((character = PeekAndSkipWhitespace(reader)) > 0) &&
-                  ((char)character != arrayEndNotationMarker))
+
+            while (true)
             {
+                int character = PeekAndSkipWhitespace(reader);
+
+                if (character < 0)
+                {
+                    throw new OSDException("Notation LLSD parsing: Unexpected end of array discovered.");
+                }
+
+                // An EMPTY array leaves through here, and the closing bracket must be CONSUMED.
+                // Peeking it and returning leaves the ']' in the stream, so whatever encloses this
+                // array reads it where it expects a delimiter -- an empty array nested in a map
+                // then fails as "Invalid key in map", naming neither the array nor the real fault.
+                if ((char)character == arrayEndNotationMarker)
+                {
+                    reader.Read();
+                    break;
+                }
+
                 osdArray.Add(DeserializeLLSDNotationElement(reader));
 
                 character = ReadAndSkipWhitespace(reader);
+
                 if (character < 0)
+                {
                     throw new OSDException("Notation LLSD parsing: Unexpected end of array discovered.");
-                else if ((char)character == kommaNotationDelimiter)
-                    continue;
-                else if ((char)character == arrayEndNotationMarker)
-                    break;
+                }
+
+                if ((char)character == kommaNotationDelimiter) { continue; }
+                if ((char)character == arrayEndNotationMarker) { break; }
+
+                throw new OSDException("Notation LLSD parsing: Unexpected delimiter in array.");
             }
-            if (character < 0)
-                throw new OSDException("Notation LLSD parsing: Unexpected end of array discovered.");
 
             return (OSD)osdArray;
         }
 
         private static OSD DeserializeLLSDNotationMap(StringReader reader)
         {
-            int character;
             OSDMap osdMap = new OSDMap();
-            while (((character = PeekAndSkipWhitespace(reader)) > 0) &&
-                  ((char)character != mapEndNotationMarker))
+
+            while (true)
             {
+                int character = PeekAndSkipWhitespace(reader);
+
+                if (character < 0)
+                {
+                    throw new OSDException("Notation LLSD parsing: Unexpected end of map discovered.");
+                }
+
+                // Same as the array: an EMPTY map exits here and its closing brace has to be
+                // consumed, or the container around it reads '}' where a delimiter belongs.
+                if ((char)character == mapEndNotationMarker)
+                {
+                    reader.Read();
+                    break;
+                }
+
                 OSD osdKey = DeserializeLLSDNotationElement(reader);
                 if (osdKey.Type != OSDType.String)
                     throw new OSDException("Notation LLSD parsing: Invalid key in map");
                 string key = osdKey.AsString();
 
                 character = ReadAndSkipWhitespace(reader);
-                if ((char)character != keyNotationDelimiter)
+                if (character < 0)
                     throw new OSDException("Notation LLSD parsing: Unexpected end of stream in map.");
                 if ((char)character != keyNotationDelimiter)
                     throw new OSDException("Notation LLSD parsing: Invalid delimiter in map.");
@@ -369,9 +401,9 @@ namespace LibreMetaverse.StructuredData
                     continue;
                 else if ((char)character == mapEndNotationMarker)
                     break;
+
+                throw new OSDException("Notation LLSD parsing: Unexpected delimiter in map.");
             }
-            if (character < 0)
-                throw new OSDException("Notation LLSD parsing: Unexpected end of map discovered.");
 
             return (OSD)osdMap;
         }
