@@ -89,6 +89,10 @@ namespace LibreMetaverse.Assets
         private const string KHR_TEXTURE_TRANSFORM = "KHR_texture_transform";
         private const string GLTF_VERSION = "2.0";
 
+        /// <summary>The "type" a Second Life material asset's LLSD envelope carries.</summary>
+        /// <remarks><c>LLGLTFMaterial::ASSET_TYPE</c>, llgltfmaterial.cpp:49.</remarks>
+        public const string AssetEnvelopeType = "GLTF 2.0";
+
         /// <summary>Matches C/C++ FLT_EPSILON (the smallest e such that 1.0+e != 1.0), used to nudge
         /// override values off of the GLTF-spec default so they stay distinguishable from an
         /// untouched field. NOT the same as .NET's float.Epsilon, which is the smallest
@@ -257,13 +261,53 @@ namespace LibreMetaverse.Assets
             AssetData = Encoding.UTF8.GetBytes(OSDParser.SerializeJsonString(doc, true));
         }
 
+        /// <summary>
+        /// The glTF document inside a Second Life material asset.
+        /// </summary>
+        /// <remarks>
+        /// <para><b>A material asset is not raw glTF.</b> The viewer wraps it in an LLSD envelope
+        /// and serialises that as LLSD BINARY —
+        /// <c>asset["version"] / asset["type"] / asset["data"]</c>, where <c>data</c> is the glTF
+        /// document as a string (<c>LLMaterialEditor::getEncodedAsset</c>,
+        /// llmaterialeditor.cpp:1240-1253, read back at <c>:1257-1270</c>).</para>
+        ///
+        /// <para>Treating the whole asset as JSON therefore fails on every material the grid
+        /// serves, and fails silently: the bytes arrive, the length looks reasonable, and the
+        /// decode simply returns false. Measured on Agni, that was every PBR material in a
+        /// region — around fifty per load, each 220 to 720 bytes.</para>
+        ///
+        /// <para>Falls back to treating the bytes as a bare glTF document, because an asset that
+        /// did not come from the grid's own editor — a test fixture, a file on disk — reasonably
+        /// might be one.</para>
+        /// </remarks>
+        private static string ExtractGltfJson(byte[] data)
+        {
+            try
+            {
+                if (OSDParser.Deserialize(data) is OSDMap envelope
+                    && envelope["type"].AsString() == AssetEnvelopeType
+                    && envelope["data"].Type == OSDType.String)
+                {
+                    return envelope["data"].AsString();
+                }
+            }
+            catch (Exception)
+            {
+                // Not LLSD at all. Fall through and try it as a bare glTF document.
+            }
+
+            return Encoding.UTF8.GetString(data);
+        }
+
         public sealed override bool Decode()
         {
             if (AssetData == null || AssetData.Length == 0) { return false; }
 
             try
             {
-                var json = Encoding.UTF8.GetString(AssetData);
+                var json = ExtractGltfJson(AssetData);
+                if (json == null) { return false; }
+
                 if (!(OSDParser.DeserializeJson(json) is OSDMap doc)) { return false; }
 
                 // images[] → UUID array
