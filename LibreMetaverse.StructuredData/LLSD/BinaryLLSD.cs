@@ -70,7 +70,11 @@ namespace LibreMetaverse.StructuredData
         private const byte mapEndBinaryMarker = (byte)'}';
         private const byte keyBinaryMarker = (byte)'k';
 
-        private static readonly byte[] llsdBinaryHeadBytes = Encoding.ASCII.GetBytes(llsdBinaryHead2);
+        // The SPACED form, which is what the reference viewer writes -- llsdserialize.cpp:99 emits
+        // "<? " + "LLSD/Binary" + " ?>". It is also the only one OSDParser.Deserialize recognises,
+        // so emitting the compact variant made this serialiser's own output unreadable by this
+        // library's own auto-detecting parser. Both are still ACCEPTED on the way in.
+        private static readonly byte[] llsdBinaryHeadBytes = Encoding.ASCII.GetBytes(llsdBinaryHead);
 
         /// <summary>
         /// Deserializes binary LLSD
