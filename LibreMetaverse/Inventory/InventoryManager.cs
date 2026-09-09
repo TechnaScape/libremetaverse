@@ -349,6 +349,17 @@ namespace LibreMetaverse
         public async Task<List<InventoryBase>> RequestFolderContentsAsync(UUID folderID, UUID ownerID,
             bool fetchFolders, bool fetchItems, InventorySortOrder order, CancellationToken cancellationToken = default)
         {
+            // Current Second Life viewers prefer AISv3 for inventory reads whenever the simulator
+            // offers it.  The legacy FetchInventoryDescendents2 endpoint is still useful for old
+            // simulators and OpenSim, but on Agni it can answer with a non-LLSD error body even
+            // while InventoryAPIv3 is healthy.  Treat AIS as the primary transport rather than
+            // asking the legacy endpoint first and making a populated inventory look empty.
+            if (ownerID == Client.Self.AgentID && Client.AisClient.IsAvailable)
+            {
+                return await RequestFolderContentsAisAsync(folderID, fetchFolders, fetchItems,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
             var cap = (ownerID == Client.Self.AgentID) ? "FetchInventoryDescendents2" : "FetchLibDescendents2";
             Uri? url = GetCapabilityURI(cap);
             if (url == null)
@@ -363,6 +374,67 @@ namespace LibreMetaverse
             };
             return await RequestFolderContentsAsync(new List<InventoryFolder>(1) { folder },
                 url, fetchFolders, fetchItems, order, cancellationToken);
+        }
+
+        /// <summary>Fetches one inventory folder through AISv3 and updates the shared store.</summary>
+        private async Task<List<InventoryBase>> RequestFolderContentsAisAsync(UUID folderID,
+            bool fetchFolders, bool fetchItems, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var result = await Client.AisClient.GetCategoryChildrenAsync(
+                    folderID.ToString(), depth: 0, recursive: false,
+                    cancellationToken: cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (!result.success)
+                    throw new InvalidDataException($"InventoryAPIv3 refused folder {folderID}");
+
+                var received = new List<InventoryBase>(
+                    result.folders.Count + result.items.Count + result.links.Count);
+
+                if (fetchFolders) received.AddRange(result.folders);
+                if (fetchItems)
+                {
+                    received.AddRange(result.items);
+                    received.AddRange(result.links);
+                }
+
+                // Cache everything the endpoint returned, even when this particular caller only
+                // requested one kind.  AIS /children is a single resource and has already paid to
+                // send both; retaining the other half prevents an immediate duplicate request.
+                CacheInventoryObjects(result.folders);
+                CacheInventoryObjects(result.items);
+                CacheInventoryObjects(result.links);
+
+                if (_Store != null && _Store.TryGetNodeFor(folderID, out var fetchedNode))
+                    fetchedNode!.NeedsUpdate = false;
+
+                OnFolderUpdated(new FolderUpdatedEventArgs(folderID, true));
+                return received;
+            }
+            catch (OperationCanceledException)
+            {
+                OnFolderUpdated(new FolderUpdatedEventArgs(folderID, false));
+                throw;
+            }
+            catch
+            {
+                OnFolderUpdated(new FolderUpdatedEventArgs(folderID, false));
+                throw;
+            }
+        }
+
+        /// <summary>Caches parsed AIS objects using the same locked store path as legacy fetches.</summary>
+        private void CacheInventoryObjects<T>(IEnumerable<T> objects) where T : InventoryBase
+        {
+            if (_Store == null || objects == null) return;
+
+            using (var writeLock = _storeLock.WriteLock())
+            {
+                foreach (InventoryBase inventoryObject in objects)
+                    _Store[inventoryObject.UUID] = inventoryObject;
+            }
         }
 
         /// <summary>

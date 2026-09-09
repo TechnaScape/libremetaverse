@@ -460,6 +460,30 @@ namespace LibreMetaverse
 
         public async Task<InventoryItem?> FetchItemAsync(UUID itemID, UUID ownerID, CancellationToken cancellationToken = default)
         {
+            // AIS is the reference viewer's primary read path.  In addition to avoiding the
+            // legacy capability failure seen on Agni, returning the parsed item directly avoids
+            // waiting for an ItemReceived event that AIS does not raise by itself.
+            if (ownerID == Client.Self.AgentID && Client.AisClient.IsAvailable)
+            {
+                var ais = await Client.AisClient.FetchItemAsync(itemID, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (ais.success)
+                {
+                    InventoryItem? fetched = ais.items.Concat(ais.links)
+                        .FirstOrDefault(item => item.UUID == itemID)
+                        ?? ais.items.FirstOrDefault()
+                        ?? ais.links.FirstOrDefault();
+
+                    if (fetched != null)
+                    {
+                        CacheInventoryObjects(new[] { fetched });
+                        OnItemReceived(new ItemReceivedEventArgs(fetched));
+                        return fetched;
+                    }
+                }
+            }
+
             var tcs = new TaskCompletionSource<InventoryItem?>(TaskCreationOptions.RunContinuationsAsynchronously);
 
             void Callback(object? sender, ItemReceivedEventArgs e)
