@@ -2426,8 +2426,25 @@ namespace LibreMetaverse
                 _cachedCofUUID = null;
             }
 
-            // Slow path: scan the root folder to locate the COF.
+            // The login reply carries the complete inventory FOLDER skeleton and
+            // InventoryManager installs it in Store before login completes.  That is the
+            // authoritative, zero-I/O way to find a special folder.  Do this before asking the
+            // region to enumerate the root: some Second Life regions legitimately return no
+            // descendants for that redundant HTTP request even though the login skeleton is
+            // populated.  Treating that answer as "there is no COF" creates a second, empty COF
+            // and the appearance pass then detaches everything.
             var rootFolder = clientLocal.Inventory.Store.RootFolder;
+
+            InventoryFolder? local = FindCurrentOutfitFolder(
+                clientLocal.Inventory.Store.GetContents(rootFolder.UUID));
+
+            if (local != null)
+            {
+                _cachedCofUUID = local.UUID;
+                return local;
+            }
+
+            // Compatibility fallback for login services that omit the folder skeleton.
 
             List<InventoryBase>? root = await clientLocal.Inventory.RequestFolderContentsAsync(rootFolder.UUID,
                 clientLocal.Self.AgentID, true, false, InventorySortOrder.ByDate,
@@ -2435,13 +2452,11 @@ namespace LibreMetaverse
 
             if (root == null) { return null; }
 
-            foreach (var baseItem in root)
+            InventoryFolder? fetched = FindCurrentOutfitFolder(root);
+            if (fetched != null)
             {
-                if (baseItem is InventoryFolder folder && folder.PreferredType == FolderType.CurrentOutfit)
-                {
-                    _cachedCofUUID = folder.UUID; // box the UUID into the volatile object field
-                    return folder;
-                }
+                _cachedCofUUID = fetched.UUID; // box the UUID into the volatile object field
+                return fetched;
             }
 
             // COF does not exist — create it so appearance operations don't silently fail
@@ -2456,6 +2471,30 @@ namespace LibreMetaverse
                     return newCof;
                 }
             }
+            return null;
+        }
+
+        /// <summary>
+        /// Finds the Current Outfit Folder by its protocol type, never by its localised name.
+        /// </summary>
+        /// <remarks>
+        /// Kept engine- and transport-free so the load-bearing login-skeleton path can be tested
+        /// without a simulator.  A resident may have an ordinary folder named "Current Outfit",
+        /// while the real special folder can have a translated name.
+        /// </remarks>
+        internal static InventoryFolder? FindCurrentOutfitFolder(IEnumerable<InventoryBase>? entries)
+        {
+            if (entries == null) return null;
+
+            foreach (InventoryBase entry in entries)
+            {
+                if (entry is InventoryFolder folder
+                    && folder.PreferredType == FolderType.CurrentOutfit)
+                {
+                    return folder;
+                }
+            }
+
             return null;
         }
 
