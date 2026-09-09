@@ -482,6 +482,14 @@ namespace LibreMetaverse
                         return fetched;
                     }
                 }
+
+                // The simulator advertised AIS and has now answered the item request. In
+                // particular, a 404 is a complete answer: falling through to the legacy
+                // event-based request waits forever because no ItemReceived event exists for a
+                // missing item. One broken outfit link would otherwise block every valid link
+                // after it. A caller fetching a folder can skip this null and continue; a caller
+                // that wants retry policy can issue another AIS request explicitly.
+                return null;
             }
 
             var tcs = new TaskCompletionSource<InventoryItem?>(TaskCreationOptions.RunContinuationsAsynchronously);

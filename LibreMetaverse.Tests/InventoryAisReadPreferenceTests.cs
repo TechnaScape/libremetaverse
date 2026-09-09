@@ -86,5 +86,26 @@ namespace LibreMetaverse.Tests
             Assert.That(client.CapturedRequests, Has.Count.EqualTo(1));
             Assert.That(client.CapturedRequests[0].Method, Is.EqualTo(System.Net.Http.HttpMethod.Get));
         }
+
+        [Test]
+        public async Task MissingAisItemReturnsInsteadOfWaitingForALegacyEvent()
+        {
+            using var client = new FakeGridClient();
+            var cap = new Uri("http://fake-ais3.test/ais3");
+            var missing = UUID.Random();
+
+            client.SetInventoryAndLibraryCaps(cap, null!);
+            client.AddHttpResponse(new Uri($"{cap}/item/{missing}"), HttpStatusCode.NotFound,
+                "Not Found", "text/plain");
+
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+            InventoryItem? item = await client.Inventory.FetchItemAsync(
+                missing, client.Self.AgentID, timeout.Token);
+
+            Assert.That(item, Is.Null);
+            Assert.That(timeout.IsCancellationRequested, Is.False,
+                "a definitive AIS 404 must not fall through to a legacy event that cannot arrive");
+            Assert.That(client.CapturedRequests, Has.Count.EqualTo(1));
+        }
     }
 }
