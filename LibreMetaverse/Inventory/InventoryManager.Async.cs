@@ -491,25 +491,12 @@ namespace LibreMetaverse
         public async Task<List<InventoryBase>> FolderContentsAsync(UUID folder, UUID owner, bool fetchFolders, bool fetchItems,
             InventorySortOrder order, CancellationToken cancellationToken = default, bool followLinks = false)
         {
-            List<InventoryBase>? inventory = null;
-
-            try
-            {
-                inventory = await RequestFolderContentsAsync(folder, owner, fetchFolders, fetchItems, order, cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch
-            {
-                inventory = null;
-            }
-
-            if (inventory == null)
-            {
-                inventory = _Store?.GetContents(folder) ?? new List<InventoryBase>();
-            }
+            // Capability and parse failures must reach the caller. Turning either into the local
+            // cache contents makes a failed Current Outfit fetch indistinguishable from a truly
+            // empty outfit and prevents viewers from retrying it.
+            List<InventoryBase> inventory = await RequestFolderContentsAsync(
+                folder, owner, fetchFolders, fetchItems, order, cancellationToken)
+                .ConfigureAwait(false);
 
             if (followLinks)
             {
@@ -1472,4 +1459,3 @@ namespace LibreMetaverse
         }
     }
 }
-

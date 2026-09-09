@@ -27,6 +27,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -395,115 +396,7 @@ namespace LibreMetaverse
                 var payload = new OSDMap(1) { ["folders"] = requestedFolders };
 
                 var result = await PostCapAsync(capabilityUri, payload, cancellationToken).ConfigureAwait(false);
-                if (result is OSDMap resultMap && resultMap.TryGetValue("folders", out var foldersSd) && foldersSd is OSDArray fetchedFolders)
-                {
-                    ret = new List<InventoryBase>(fetchedFolders.Count);
-                    foreach (var fetchedFolderNr in fetchedFolders)
-                    {
-                        var res = (OSDMap)fetchedFolderNr;
-                        InventoryFolder fetchedFolder;
-
-                        var store = _Store;
-                        if (store != null && store.TryGetValue(res["folder_id"], out var invFolder) && invFolder is InventoryFolder folderCast)
-                        {
-                            fetchedFolder = folderCast;
-                        }
-                        else
-                        {
-                            fetchedFolder = new InventoryFolder(res["folder_id"]);
-                            // Update store under write lock to avoid races
-                            if (_Store != null)
-                            {
-                                using (var writeLock = _storeLock.WriteLock())
-                                {
-                                    _Store[fetchedFolder.UUID] = fetchedFolder;
-                                }
-                            }
-                            else
-                            {
-                                Logger.Debug("Inventory store is not initialized, fetched folder will not be cached locally", Client);
-                            }
-                        }
-                        fetchedFolder.DescendentCount = res["descendents"];
-                        fetchedFolder.Version = res["version"];
-                        fetchedFolder.OwnerID = res["owner_id"];
-                        if (_Store != null && _Store.TryGetNodeFor(fetchedFolder.UUID, out var fetchedNode))
-                        {
-                            fetchedNode!.NeedsUpdate = false;
-                        }
-
-                        // Do we have any descendants
-                        if (fetchedFolder.DescendentCount > 0)
-                        {
-                            // Fetch descendent folders
-                            if (res["categories"] is OSDArray folders)
-                            {
-                                foreach (var cat in folders)
-                                {
-                                    var descFolder = (OSDMap)cat;
-                                    InventoryFolder folder;
-                                    UUID folderID = descFolder.TryGetValue("category_id", out var category_id)
-                                        ? category_id : descFolder["folder_id"];
-
-                                    if (!(_Store != null
-                                          && _Store.TryGetValue(folderID, out var existing)
-                                          && existing is InventoryFolder existingFolder))
-                                    {
-                                        folder = new InventoryFolder(folderID)
-                                        {
-                                            ParentUUID = descFolder["parent_id"],
-                                        };
-                                        // Update store under write lock to avoid races
-                                        if (_Store != null)
-                                        {
-                                            using (var writeLock = _storeLock.WriteLock())
-                                            {
-                                                _Store[folderID] = folder;
-                                            }
-                                        }
-                                        else
-                                        {
-                                            Logger.Debug("Inventory store is not initialized, descendent folder will not be cached locally", Client);
-                                        }
-                                    }
-                                    else
-                                    {
-                                        folder = existingFolder;
-                                    }
-
-                                    folder.OwnerID = descFolder["agent_id"];
-                                    folder.Name = descFolder["name"];
-                                    folder.Version = descFolder["version"];
-                                    folder.PreferredType = (FolderType)descFolder["type_default"].AsInteger();
-                                    ret.Add(folder);
-                                }
-                            }
-
-                            // Fetch descendent items
-                            if (res.TryGetValue("items", out var items))
-                            {
-                                var arr = (OSDArray)items;
-                                foreach (var it in arr)
-                                {
-                                    var item = InventoryItem.FromOSD(it);
-                                    if (_Store != null)
-                                    {
-                                        using (var writeLock = _storeLock.WriteLock())
-                                        {
-                                            _Store[item.UUID] = item;
-                                        }
-                                    }
-                                    else
-                                    {
-                                        Logger.Debug("Inventory store is not initialized, descendent item will not be cached locally", Client);
-                                    }
-                                    ret.Add(item);
-                                }
-                            }
-                        }
-                        OnFolderUpdated(new FolderUpdatedEventArgs(res["folder_id"], true));
-                    }
-                }
+                ret = ParseFolderContentsResponse(result, batch);
             }
             catch (Exception ex)
             {
@@ -513,7 +406,179 @@ namespace LibreMetaverse
                 {
                     OnFolderUpdated(new FolderUpdatedEventArgs(f.UUID, false));
                 }
+                throw;
             }
+            return ret;
+        }
+
+        /// <summary>Parses a FetchInventoryDescendents2 response and updates the local store.</summary>
+        /// <remarks>
+        /// The simulator's <c>descendents</c> field is advisory metadata, not a guard around the
+        /// two arrays. Firestorm consumes <c>categories</c> and <c>items</c> whenever they are
+        /// present. Some inventory services have returned a stale zero count beside populated
+        /// arrays; the old LibreMetaverse parser threw those arrays away and made a worn outfit
+        /// look genuinely empty.
+        /// </remarks>
+        internal List<InventoryBase> ParseFolderContentsResponse(
+            OSD result, IReadOnlyCollection<InventoryFolder> requested)
+        {
+            if (!(result is OSDMap resultMap))
+            {
+                throw new InvalidDataException(
+                    "FetchInventoryDescendents2 returned a non-map response");
+            }
+
+            if (resultMap.TryGetValue("bad_folders", out var badSd) &&
+                badSd is OSDArray badFolders && badFolders.Count > 0)
+            {
+                string details = string.Join(", ", badFolders.Select(bad =>
+                {
+                    if (!(bad is OSDMap map)) return bad.ToString();
+                    string id = map.TryGetValue("folder_id", out var folderId)
+                        ? folderId.AsString() : "unknown folder";
+                    string error = map.TryGetValue("error", out var errorSd)
+                        ? errorSd.AsString() : "unspecified error";
+                    return $"{id}: {error}";
+                }));
+
+                throw new InvalidDataException(
+                    $"FetchInventoryDescendents2 rejected {details}");
+            }
+
+            if (!resultMap.TryGetValue("folders", out var foldersSd) ||
+                !(foldersSd is OSDArray fetchedFolders))
+            {
+                throw new InvalidDataException(
+                    "FetchInventoryDescendents2 response did not contain a folders array");
+            }
+
+            if (requested.Count > 0 && fetchedFolders.Count == 0)
+            {
+                throw new InvalidDataException(
+                    "FetchInventoryDescendents2 returned no records for the requested folders");
+            }
+
+            var ret = new List<InventoryBase>(fetchedFolders.Count);
+            foreach (var fetchedFolderNr in fetchedFolders)
+            {
+                if (!(fetchedFolderNr is OSDMap res))
+                {
+                    throw new InvalidDataException(
+                        "FetchInventoryDescendents2 returned a non-map folder record");
+                }
+
+                InventoryFolder fetchedFolder;
+
+                var store = _Store;
+                if (store != null && store.TryGetValue(res["folder_id"], out var invFolder) && invFolder is InventoryFolder folderCast)
+                {
+                    fetchedFolder = folderCast;
+                }
+                else
+                {
+                    fetchedFolder = new InventoryFolder(res["folder_id"]);
+                    // Update store under write lock to avoid races
+                    if (_Store != null)
+                    {
+                        using (var writeLock = _storeLock.WriteLock())
+                        {
+                            _Store[fetchedFolder.UUID] = fetchedFolder;
+                        }
+                    }
+                    else
+                    {
+                        Logger.Debug("Inventory store is not initialized, fetched folder will not be cached locally", Client);
+                    }
+                }
+                fetchedFolder.DescendentCount = res["descendents"];
+                fetchedFolder.Version = res["version"];
+                fetchedFolder.OwnerID = res["owner_id"];
+                if (_Store != null && _Store.TryGetNodeFor(fetchedFolder.UUID, out var fetchedNode))
+                {
+                    fetchedNode!.NeedsUpdate = false;
+                }
+
+                int parsedDescendants = 0;
+
+                // Fetch descendent folders. Do not gate this on DescendentCount: Firestorm does
+                // not, and the count has been observed stale beside populated arrays.
+                if (res["categories"] is OSDArray folders)
+                {
+                    parsedDescendants += folders.Count;
+                    foreach (var cat in folders)
+                    {
+                        var descFolder = (OSDMap)cat;
+                        InventoryFolder folder;
+                        UUID folderID = descFolder.TryGetValue("category_id", out var category_id)
+                            ? category_id : descFolder["folder_id"];
+
+                        if (!(_Store != null
+                              && _Store.TryGetValue(folderID, out var existing)
+                              && existing is InventoryFolder existingFolder))
+                        {
+                            folder = new InventoryFolder(folderID)
+                            {
+                                ParentUUID = descFolder["parent_id"],
+                            };
+                            // Update store under write lock to avoid races
+                            if (_Store != null)
+                            {
+                                using (var writeLock = _storeLock.WriteLock())
+                                {
+                                    _Store[folderID] = folder;
+                                }
+                            }
+                            else
+                            {
+                                Logger.Debug("Inventory store is not initialized, descendent folder will not be cached locally", Client);
+                            }
+                        }
+                        else
+                        {
+                            folder = existingFolder;
+                        }
+
+                        folder.OwnerID = descFolder["agent_id"];
+                        folder.Name = descFolder["name"];
+                        folder.Version = descFolder["version"];
+                        folder.PreferredType = (FolderType)descFolder["type_default"].AsInteger();
+                        ret.Add(folder);
+                    }
+                }
+
+                // Fetch descendent items, independently of whether categories were requested.
+                if (res.TryGetValue("items", out var items) && items is OSDArray arr)
+                {
+                    parsedDescendants += arr.Count;
+                    foreach (var it in arr)
+                    {
+                        var item = InventoryItem.FromOSD(it);
+                        if (_Store != null)
+                        {
+                            using (var writeLock = _storeLock.WriteLock())
+                            {
+                                _Store[item.UUID] = item;
+                            }
+                        }
+                        else
+                        {
+                            Logger.Debug("Inventory store is not initialized, descendent item will not be cached locally", Client);
+                        }
+                        ret.Add(item);
+                    }
+                }
+
+                if (parsedDescendants > 0 && fetchedFolder.DescendentCount <= 0)
+                {
+                    Logger.Warn(
+                        $"FetchInventoryDescendents2 returned {parsedDescendants} children for "
+                        + $"{fetchedFolder.UUID} beside descendent count "
+                        + $"{fetchedFolder.DescendentCount}; preserving the child arrays", Client);
+                }
+
+                OnFolderUpdated(new FolderUpdatedEventArgs(res["folder_id"], true));
+            }
+
             return ret;
         }
 
