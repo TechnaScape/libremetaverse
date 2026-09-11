@@ -199,8 +199,42 @@ namespace LibreMetaverse
 
             TeleportMessage = "Teleport timed out.";
             teleportStatus = TeleportStatus.Failed;
-            Logger.Info("Teleport has timed out.", Client);
+            Logger.Warn("Teleport has timed out.", Client);
+
+            // [SLUnity] Say so. Every other way a teleport ends raises TeleportProgress; this one did
+            // not, so anything following the teleport through that event -- a viewer's progress
+            // screen -- was left believing it still ran.
+            if (m_Teleport != null)
+                OnTeleport(new TeleportEventArgs(TeleportMessage, teleportStatus, TeleportFlags.Default));
             return false;
+        }
+
+        /// <summary>
+        /// Gives up on a teleport that has stopped making progress. [SLUnity]
+        /// </summary>
+        /// <remarks>
+        /// The reference's own "Give up. Don't keep the UI locked forever." (update_tp_display in
+        /// llviewerdisplay.cpp). A teleport begun by a script or a lure has no timeout here at all, so
+        /// one the simulator never finishes or fails leaves the status at Start or Progress for good
+        /// -- and every later request is then refused as already running. Raises
+        /// <see cref="TeleportProgress"/> with the failure, like any other ending.
+        /// </remarks>
+        /// <param name="reason">What to report as the teleport's message</param>
+        public void AbandonTeleport(string reason)
+        {
+            bool running = teleportStatus == TeleportStatus.Start
+                           || teleportStatus == TeleportStatus.Progress
+                           || _teleportTcs != null;
+            if (!running) return;
+
+            TeleportMessage = reason;
+            teleportStatus = TeleportStatus.Failed;
+            Logger.Warn($"Teleport abandoned: {reason}", Client);
+
+            if (m_Teleport != null)
+                OnTeleport(new TeleportEventArgs(TeleportMessage, teleportStatus, TeleportFlags.Default));
+
+            _teleportTcs?.TrySetResult(false);
         }
 
         /// <summary>

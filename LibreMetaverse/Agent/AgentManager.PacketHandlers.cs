@@ -451,31 +451,9 @@ namespace LibreMetaverse
 
                 Logger.DebugLog($"TeleportFinish received, Flags: {flags}", Client);
 
-                // Connect to the new sim
-                var currentSim = Client?.Network?.CurrentSim;
-                if (currentSim != null)
-                {
-                    currentSim.AgentMovementComplete = false; // we're not there anymore
-                }
-
-                Simulator? newSimulator = Client?.Network?.Connect(new IPAddress(finish.Info.SimIP),
-                    finish.Info.SimPort, finish.Info.RegionHandle, true, seedcaps);
-
-                if (newSimulator != null)
-                {
-                    TeleportMessage = "Teleport finished";
-                    teleportStatus = TeleportStatus.Finished;
-
-                    Logger.Info($"Moved to {newSimulator}", Client);
-                }
-                else
-                {
-                    TeleportMessage = $"Failed to connect to simulator after teleport";
-                    teleportStatus = TeleportStatus.Failed;
-
-                    // We're going to get disconnected now
-                    Logger.Error(TeleportMessage, Client);
-                }
+                // Connect to the new sim, and move in only once it has answered. [SLUnity]
+                ArriveAfterTeleport(new IPEndPoint(new IPAddress(finish.Info.SimIP), finish.Info.SimPort),
+                    finish.Info.RegionHandle, seedcaps, Simulator.DefaultRegionSizeX, Simulator.DefaultRegionSizeY);
             }
             else if (packet.Type == PacketType.TeleportCancel)
             {
@@ -967,6 +945,54 @@ namespace LibreMetaverse
         }
 
         /// <summary>
+        /// Moves the agent into the region a TeleportFinish names -- once that region has answered. [SLUnity]
+        /// </summary>
+        /// <remarks>
+        /// Connecting with setDefault made the destination the current simulator inside the call that
+        /// blocks for its handshake, so a destination that never answered took the agent with it:
+        /// every AgentUpdate and request after that went to a region with no circuit, and a viewer sat
+        /// on its teleport until the resident logged out. The reference moves the agent only when the
+        /// destination answers (process_agent_movement_complete; the setRegion in
+        /// process_teleport_finish is commented out). So the circuit is opened first and made current
+        /// only if it answered -- the region crossing's two steps -- and otherwise the region we left
+        /// stays current, which is the only one this viewer still has a circuit to.
+        /// </remarks>
+        private void ArriveAfterTeleport(IPEndPoint endPoint, ulong handle, Uri? seedcaps, uint sizeX, uint sizeY)
+        {
+            NetworkManager? network = Client?.Network;
+            Simulator? departing = network?.CurrentSim;
+            bool wasComplete = departing?.AgentMovementComplete ?? false;
+            if (departing != null)
+            {
+                departing.AgentMovementComplete = false; // we're not there anymore
+            }
+
+            Simulator? arrived = network?.Connect(endPoint, handle, false, seedcaps, sizeX, sizeY);
+            if (arrived != null)
+            {
+                arrived = network?.Connect(endPoint, handle, true, seedcaps, sizeX, sizeY);
+            }
+
+            if (arrived != null)
+            {
+                TeleportMessage = "Teleport finished";
+                teleportStatus = TeleportStatus.Finished;
+
+                Logger.Info($"Moved to {arrived}", Client);
+                return;
+            }
+
+            if (departing != null)
+            {
+                departing.AgentMovementComplete = wasComplete;
+            }
+
+            TeleportMessage = "The destination region did not answer. It may be down or restarting.";
+            teleportStatus = TeleportStatus.Failed;
+            Logger.Warn($"Teleport destination {endPoint} did not answer; staying in {departing?.Name ?? "the current region"}", Client);
+        }
+
+        /// <summary>
         /// Process TeleportFinish from Event Queue
         /// </summary>
         /// <param name="capsKey">The message key</param>
@@ -984,31 +1010,9 @@ namespace LibreMetaverse
 
             Logger.DebugLog($"TeleportFinish received, Flags: {flags}", Client);
 
-            // Connect to the new sim
-            var currentSim = Client?.Network?.CurrentSim;
-            if (currentSim != null)
-            {
-                currentSim.AgentMovementComplete = false; // we're not there anymore
-            }
-
-            Simulator? newSimulator = Client?.Network?.Connect(msg.IP, (ushort)msg.Port, msg.RegionHandle, true,
+            // Connect to the new sim, and move in only once it has answered. [SLUnity]
+            ArriveAfterTeleport(new IPEndPoint(msg.IP, (ushort)msg.Port), msg.RegionHandle,
                 msg.SeedCapability, msg.RegionSizeX, msg.RegionSizeY);
-
-            if (newSimulator != null)
-            {
-                TeleportMessage = "Teleport finished";
-                teleportStatus = TeleportStatus.Finished;
-
-                Logger.Info($"Moved to {newSimulator}", Client);
-            }
-            else
-            {
-                TeleportMessage = "Failed to connect to simulator after teleport";
-                teleportStatus = TeleportStatus.Failed;
-
-                // We're going to get disconnected now
-                Logger.Error(TeleportMessage, Client);
-            }
 
             if (m_Teleport != null)
             {
