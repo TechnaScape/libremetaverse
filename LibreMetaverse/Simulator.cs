@@ -1035,26 +1035,41 @@ namespace LibreMetaverse
                 }
             };
 
-            if (waitForAck)
+            if (!waitForAck)
             {
-                GotUseCircuitCodeAck.Reset();
+                SendPacket(use);
+                return true;
             }
 
-            // Send the initial packet out
-            SendPacket(use);
+            GotUseCircuitCodeAck.Reset();
 
-            if (waitForAck)
+            // Resent while unacknowledged, as the viewer sends it (sendReliable with retries,
+            // llstartup.cpp). The resend timer that would otherwise carry a reliable packet is not
+            // started until the region has handshaked, so before this the packet went out exactly
+            // once and a single lost datagram -- the first one on a fresh socket, commonly -- was
+            // a whole login timeout of silence and a refused login that a retry would have
+            // completed. [SLUnity]
+            int perAttempt = Math.Min(UseCircuitCodeTimeoutMs, Client.Settings.Timing.LoginTimeout);
+            for (int attempt = 0; attempt <= UseCircuitCodeRetries; attempt++)
             {
-                bool signaled = await WaitHandleAsyncFactory.FromWaitHandle(GotUseCircuitCodeAck.WaitHandle, TimeSpan.FromMilliseconds(Client.Settings.Timing.LoginTimeout)).ConfigureAwait(false);
-                if (!signaled)
-                {
-                    Logger.Error("Failed to get ACK for UseCircuitCode packet", Client);
-                }
-                return signaled;
+                if (attempt > 0)
+                    Logger.Warn($"No ACK for UseCircuitCode from {this} after {perAttempt} ms; resending ({attempt} of {UseCircuitCodeRetries})", Client);
+
+                SendPacket(use);
+
+                bool signaled = await WaitHandleAsyncFactory.FromWaitHandle(GotUseCircuitCodeAck.WaitHandle, TimeSpan.FromMilliseconds(perAttempt)).ConfigureAwait(false);
+                if (signaled) return true;
             }
 
-            return true;
+            Logger.Error("Failed to get ACK for UseCircuitCode packet", Client);
+            return false;
         }
+
+        /// <summary>How many times UseCircuitCode is resent before the connect is given up. [SLUnity]</summary>
+        private const int UseCircuitCodeRetries = 3;
+
+        /// <summary>How long each UseCircuitCode send waits for its acknowledgement. [SLUnity]</summary>
+        private const int UseCircuitCodeTimeoutMs = 5000;
 
         /// <summary>
         /// Backwards-compatible synchronous wrapper
