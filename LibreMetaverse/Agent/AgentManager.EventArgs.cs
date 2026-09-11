@@ -107,8 +107,11 @@ namespace LibreMetaverse
         public string ObjectName { get; }
         public string ObjectOwnerName { get; }
         public ScriptPermission Questions { get; }
+        /// <summary>The requesting experience, or zero for an ordinary script permission.</summary>
+        public UUID ExperienceID { get; }
 
-        public ScriptQuestionEventArgs(Simulator simulator, UUID taskID, UUID itemID, string objectName, string objectOwner, ScriptPermission questions)
+        public ScriptQuestionEventArgs(Simulator simulator, UUID taskID, UUID itemID, string objectName,
+            string objectOwner, ScriptPermission questions, UUID experienceID = default)
         {
             Simulator = simulator;
             TaskID = taskID;
@@ -116,6 +119,7 @@ namespace LibreMetaverse
             ObjectName = objectName;
             ObjectOwnerName = objectOwner;
             Questions = questions;
+            ExperienceID = experienceID;
         }
     }
 
