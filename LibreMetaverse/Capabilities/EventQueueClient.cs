@@ -26,7 +26,6 @@
  */
 
 using System;
-using System.Collections;
 using System.Net;
 using System.Net.Http;
 using System.Threading;
@@ -39,17 +38,17 @@ namespace LibreMetaverse.Http
     /// <summary>EventQueueClient manages the polling-based EventQueueGet capability</summary>
     public class EventQueueClient : IDisposable
     {
-        private const string PROXY_TIMEOUT_RESPONSE = "502 Proxy Error";
-        private const string MALFORMED_EMPTY_RESPONSE = "<llsd><undef /></llsd>";
-
         // Exponential backoff bounds for transient HTTP/network errors.
         private const int InitialEqRetryDelayMs = 1_000;
         private const int MaxEqRetryDelayMs = 30_000;
 
         // Milliseconds to wait before the next request; written by RequestCompletedHandler,
-        // read and reset by the polling loop.  Accessed only from the single EQ task so no
+        // read by the polling loop and reset only after recovery. Accessed from the EQ task so no
         // Interlocked is needed, but volatile prevents stale reads across the await boundary.
         private volatile int _pendingRetryDelayMs;
+
+        // Failures since the last good poll. [SLUnity]
+        private int _consecutiveFailures;
 
         public delegate void ConnectedCallback();
         public delegate void EventCallback(string eventName, OSDMap body);
@@ -127,8 +126,8 @@ namespace LibreMetaverse.Http
             int next = currentMs == 0 ? InitialEqRetryDelayMs
                                       : Math.Min(MaxEqRetryDelayMs, currentMs * 2);
             // Add 0–12.5% jitter using TickCount as a cheap pseudo-random source.
-            next += Math.Abs(Environment.TickCount) % (next / 8 + 1);
-            return next;
+            next += (int)((uint)Environment.TickCount % (uint)(next / 8 + 1));
+            return Math.Min(MaxEqRetryDelayMs, next);
         }
 
         private void Create()
@@ -159,6 +158,8 @@ namespace LibreMetaverse.Http
             var token = newCts.Token;
 
             _pendingRetryDelayMs = 0;
+            Interlocked.Exchange(ref _consecutiveFailures, 0);
+            _connectedNotified = false;
 
             _eqTask = Task.Run(async () =>
             {
@@ -170,7 +171,6 @@ namespace LibreMetaverse.Http
                     while (!token.IsCancellationRequested)
                     {
                         int delayMs = _pendingRetryDelayMs;
-                        _pendingRetryDelayMs = 0;
 
                         if (delayMs > 0)
                             await Task.Delay(delayMs, token).ConfigureAwait(false);
@@ -207,9 +207,15 @@ namespace LibreMetaverse.Http
                     try
                     {
                         var (response, data) = await Simulator.Client.HttpCapsClient.PostAsync(
-                            Address, OSDFormat.Xml, payloadSnapshot, token).ConfigureAwait(false);
-                        ConnectedResponseHandler(response);
+                            // These bytes already contain the LLSD XML map. The OSDFormat
+                            // overload implicitly converts byte[] to OSDBinary and serializes
+                            // it again, hiding ack/done from the server inside a binary value.
+                            Address, HttpCapsClient.LLSD_XML, payloadSnapshot, token).ConfigureAwait(false);
                         RequestCompletedHandler(response, data, null);
+                    }
+                    catch (OperationCanceledException timeout) when (!token.IsCancellationRequested)
+                    {
+                        RequestCompletedHandler(null, null, timeout);
                     }
                     catch (Exception innerEx) when (!(innerEx is OperationCanceledException))
                     {
@@ -326,275 +332,166 @@ namespace LibreMetaverse.Http
             return false;
         }
 
+        private long _batches, _events, _transportFailures, _httpFailures;
+        private long _invalidResponses, _invalidEvents, _normalTimeouts, _lastSuccessTicks;
+        private string _lastFailure = "none";
+        private bool _connectedNotified;
+
+        /// <summary>Read-only diagnostics, without capability URLs or event payloads.</summary>
+        public string DescribeHealth()
+        {
+            long ticks = Interlocked.Read(ref _lastSuccessTicks);
+            string last = ticks == 0 ? "never" : new DateTime(ticks, DateTimeKind.Utc).ToString("O");
+            return $"running={Running} batches={Interlocked.Read(ref _batches)} events={Interlocked.Read(ref _events)} "
+                + $"transportFailures={Interlocked.Read(ref _transportFailures)} httpFailures={Interlocked.Read(ref _httpFailures)} "
+                + $"invalidResponses={Interlocked.Read(ref _invalidResponses)} invalidEvents={Interlocked.Read(ref _invalidEvents)} "
+                + $"idleTimeouts={Interlocked.Read(ref _normalTimeouts)} retryMs={_pendingRetryDelayMs} "
+                + $"lastSuccess={last} lastFailure={Volatile.Read(ref _lastFailure)}";
+        }
+
+        private static bool IsIdleTimeout(Exception error)
+        {
+            for (Exception? part = error; part != null; part = part.InnerException)
+            {
+                if (part is OperationCanceledException) return true;
+                if (part is WebException web && (web.Status == WebExceptionStatus.ConnectionClosed
+                    || web.Status == WebExceptionStatus.KeepAliveFailure || web.Status == WebExceptionStatus.Timeout)) return true;
+#if NET8_0_OR_GREATER
+                if (part is HttpRequestException http && http.HttpRequestError == HttpRequestError.ResponseEnded) return true;
+#endif
+            }
+            return false;
+        }
+
+        private static string DescribeException(Exception error)
+        {
+            var detail = new System.Text.StringBuilder();
+            for (Exception? part = error; part != null; part = part.InnerException)
+            {
+                if (detail.Length > 0) detail.Append(" -> ");
+                detail.Append(part.GetType().Name);
+                if (part is WebException web) detail.Append('(').Append(web.Status).Append(')');
+                if (part is System.Net.Sockets.SocketException socket) detail.Append('(').Append(socket.SocketErrorCode).Append(')');
+                detail.Append(": ").Append(part.Message.Replace('\r', ' ').Replace('\n', ' '));
+            }
+            // Capabilities carry session secrets in their paths. Do not put them in F8 reports.
+            return System.Text.RegularExpressions.Regex.Replace(detail.ToString(), @"https?://[^\s'""<>]+", "[URL]");
+        }
+
+        private void Failed(string reason)
+        {
+            Volatile.Write(ref _lastFailure, reason);
+            _pendingRetryDelayMs = NextRetryDelay(_pendingRetryDelayMs);
+
+            // [SLUnity] A region's event queue dropping its long poll is routine -- simulators and
+            // the proxies in front of them close them, and the next poll carries on from the last
+            // acknowledgement. Only a run of failures is worth a warning; the first two are
+            // information, or a viewer's error console fills with the network doing its job.
+            string line = $"Event queue at {Simulator}: {reason}; retry in {_pendingRetryDelayMs} ms";
+            if (Interlocked.Increment(ref _consecutiveFailures) <= 2) Logger.Info(line);
+            else Logger.Warn(line);
+        }
+
         private void RequestCompletedHandler(HttpResponseMessage? response, byte[]? responseData, Exception? error)
         {
-            // Ignore anything if we're no longer connected to the sim.
-            if (!Simulator.Connected) { return; }
+            if (!Simulator.Connected) return;
 
+            if (error != null)
+            {
+                if (IsIdleTimeout(error))
+                {
+                    Interlocked.Increment(ref _normalTimeouts);
+                    _pendingRetryDelayMs = 0;
+                    Interlocked.Exchange(ref _consecutiveFailures, 0);
+                }
+                else
+                {
+                    Interlocked.Increment(ref _transportFailures);
+                    Failed("transport failure before a complete response: " + DescribeException(error));
+                }
+                return; // Never replace the previous acknowledgement on a failed request.
+            }
+
+            if (response?.IsSuccessStatusCode != true)
+            {
+                Interlocked.Increment(ref _httpFailures);
+                int status = response == null ? 0 : (int)response.StatusCode;
+                if (status == 404 || status == 410)
+                {
+                    Volatile.Write(ref _lastFailure, $"HTTP {status}: capability expired");
+                    Logger.Info($"Closing event queue at {Simulator}: HTTP {status}");
+                    var source = Volatile.Read(ref _queueCts);
+                    try { source?.Cancel(); } catch (ObjectDisposedException) { }
+                }
+                else
+                {
+                    // Long-poll proxies often return 499/502 on timeout. Retry these too;
+                    // no HTTP error response is a new batch to acknowledge.
+                    Failed($"HTTP {status} ({responseData?.Length ?? 0} bytes)");
+                }
+                return;
+            }
+
+            OSDMap result;
+            OSDArray events;
+            OSD ack;
             try
             {
-                OSDArray? events = null;
-                OSD ack = new OSD();
-
-                #region Error handling
-                if (error != null)
-                {
-                    if (response == null) // This happens during a timeout (i.e. normal eventqueue operation.)
-                    {
-                        if (error is HttpRequestException exception)
-                        {
-                            bool isNormalTimeout;
-#if NET5_0_OR_GREATER
-                            isNormalTimeout = exception.HttpRequestError == HttpRequestError.ResponseEnded;
-#else
-                            // On older runtimes, HttpRequestException.Message is always the generic
-                            // "An error occurred while sending the request." wrapper regardless of cause;
-                            // the real reason lives in InnerException. The normal way a long-poll ends
-                            // when idle is the server closing the held-open connection, which surfaces
-                            // as a WebException with Status ConnectionClosed or KeepAliveFailure.
-                            isNormalTimeout = exception.InnerException is WebException webEx &&
-                                (webEx.Status == WebExceptionStatus.ConnectionClosed ||
-                                 webEx.Status == WebExceptionStatus.KeepAliveFailure);
-#endif
-                            if (!isNormalTimeout)
-                            {
-                                Logger.Error($"Unable to parse response from {Simulator} event queue: " +
-                                           error.Message);
-                                _pendingRetryDelayMs = NextRetryDelay(_pendingRetryDelayMs);
-                            }
-                        }
-                        else
-                        {
-                            Logger.Error($"Unable to parse response from {Simulator} event queue: " +
-                                       error.Message);
-                            _pendingRetryDelayMs = NextRetryDelay(_pendingRetryDelayMs);
-                        }
-
-                        return;
-                    }
-
-                    switch (response.StatusCode)
-                    {
-                        case HttpStatusCode.NotFound:
-                        case HttpStatusCode.Gone:
-                            Logger.Info($"Closing event queue at {Simulator} due to missing caps URI");
-
-                            // Cancel safely on snapshot
-                            var ctsSnapshot1 = Volatile.Read(ref _queueCts);
-                            if (ctsSnapshot1 != null)
-                            {
-                                try { ctsSnapshot1.Cancel(); } catch (ObjectDisposedException) { }
-                            }
-                            break;
-                        case (HttpStatusCode)499: // weird error returned occasionally, ignore for now
-                            Logger.Debug($"Possible HTTP-out timeout error from {Simulator}, no need to continue");
-
-                            var ctsSnapshot2 = Volatile.Read(ref _queueCts);
-                            if (ctsSnapshot2 != null)
-                            {
-                                try { ctsSnapshot2.Cancel(); } catch (ObjectDisposedException) { }
-                            }
-                            break;
-
-                        case HttpStatusCode.InternalServerError:
-                        {
-                            // If responseData already buffered, log it directly
-                            if (responseData != null)
-                            {
-                                try
-                                {
-                                    var responseString = System.Text.Encoding.UTF8.GetString(responseData);
-                                    if (!string.IsNullOrEmpty(responseString) &&
-                                        responseString.IndexOf(PROXY_TIMEOUT_RESPONSE, StringComparison.Ordinal) < 0)
-                                    {
-                                        Logger.Debug($"Full response was: {responseString}", Simulator.Client);
-                                    }
-                                }
-                                catch { /* ignore decode failures */ }
-                            }
-
-                            if (error.InnerException != null)
-                            {
-                                if (error.InnerException.Message.IndexOf(PROXY_TIMEOUT_RESPONSE, StringComparison.Ordinal) < 0)
-                                {
-                                    var ctsSnapshot3 = Volatile.Read(ref _queueCts);
-                                    if (ctsSnapshot3 != null)
-                                    {
-                                        try { ctsSnapshot3.Cancel(); } catch (ObjectDisposedException) { }
-                                    }
-                                }
-                                else
-                                {
-                                    // Proxy timeout wrapped in a 500 — server is stressed, back off.
-                                    _pendingRetryDelayMs = NextRetryDelay(_pendingRetryDelayMs);
-                                }
-                            }
-                            else
-                            {
-                                const bool WILLFULLY_IGNORE_LL_SPECS_ON_EVENT_QUEUE = true;
-
-                                if (!WILLFULLY_IGNORE_LL_SPECS_ON_EVENT_QUEUE || !Simulator.Connected)
-                                {
-                                    var ctsSnapshot4 = Volatile.Read(ref _queueCts);
-                                    if (ctsSnapshot4 != null)
-                                    {
-                                        try { ctsSnapshot4.Cancel(); } catch (ObjectDisposedException) { }
-                                    }
-                                }
-                                else
-                                {
-                                    // Ignoring spec's "stop on 500" — back off before retrying.
-                                    _pendingRetryDelayMs = NextRetryDelay(_pendingRetryDelayMs);
-                                }
-                            }
-                        }
-                            break;
-
-                        case HttpStatusCode.BadGateway:
-                            // This is not good (server) protocol design, but it's normal.
-                            // The EventQueue server is a proxy that connects to a Squid
-                            // cache which will time out periodically. The EventQueue server
-                            // interprets this as a generic error and returns a 502 to us
-                            // that we ignore
-                            //
-                            // Note: if this condition persists, it _might_ be the grid trying to request
-                            // that the client closes the connection, as per LL's specs (gwyneth 20220414)
-                            Logger.Debug($"Grid sent a Bad Gateway Error at {Simulator}; " +
-                                       $"probably a time-out from the grid's EventQueue server (normal) -- ignoring and continuing");
-                            break;
-                        default:
-                            // Try to log a meaningful error message
-                            if (response.StatusCode != HttpStatusCode.OK)
-                            {
-                                Logger.Warn($"Unrecognized caps connection problem from {Simulator}: {response.StatusCode} {response.ReasonPhrase}");
-                                _pendingRetryDelayMs = NextRetryDelay(_pendingRetryDelayMs);
-                            }
-                            else if (error.InnerException != null)
-                            {
-                                // see comment above (gwyneth 20220414)
-                                Logger.Warn($"Unrecognized internal caps exception from {Simulator}: '{error.InnerException.Message}'");
-                                Logger.Warn($"Message ---\n{error.Message}");
-                                if (error.Data.Count > 0)
-                                {
-                                    Logger.Warn("  Extra details:");
-                                    foreach (DictionaryEntry de in error.Data)
-                                    {
-                                        Logger.Warn($"    Key: {"'" + de.Key + "'",-20}      Value: {de.Value}");
-                                    }
-                                }
-                            }
-                            else
-                            {
-                                Logger.Warn($"Unrecognized caps exception from {Simulator}: {error.Message}");
-                            }
-
-                            break;
-                    } // end switch
-                }
-                #endregion Error handling
-                else if (responseData != null)
-                {
-                    // Got a proper HTTP response — clear any pending backoff regardless of whether
-                    // the body parses cleanly.  The server is reachable and answering.
-                    _pendingRetryDelayMs = 0;
-
-                    // Got a response. Validate that the payload is likely LLSD/XML before attempting to parse.
-                    if (!IsLikelyLLSD(response, responseData))
-                    {
-                        var responseString = System.Text.Encoding.UTF8.GetString(responseData);
-                        if (responseString.IndexOf(PROXY_TIMEOUT_RESPONSE, StringComparison.Ordinal) < 0
-                            && responseString.IndexOf(MALFORMED_EMPTY_RESPONSE, StringComparison.Ordinal) < 0)
-                        {
-                            var preview = responseString.Length > 200 ? responseString.Substring(0, 200) : responseString;
-                            Logger.Warn($"Skipping LLSD parsing; server returned non-LLSD response from {Simulator}: \"{preview}\"");
-                        }
-                    }
-                    else
-                    {
-                        if (OSDParser.DeserializeLLSDXml(responseData) is OSDMap result)
-                        {
-                            events = result["events"] as OSDArray;
-                            ack = result["id"];
-                        }
-                        else
-                        {
-                            var responseString = System.Text.Encoding.UTF8.GetString(responseData);
-
-                            // We might get a ghost Gateway 502 in the message body, or we may get a 
-                            // badly-formed Undefined LLSD response. It's just par for the course for
-                            // EventQueueGet and we take it in stride
-                            if (responseString.IndexOf(PROXY_TIMEOUT_RESPONSE, StringComparison.Ordinal) < 0
-                                && responseString.IndexOf(MALFORMED_EMPTY_RESPONSE, StringComparison.Ordinal) < 0)
-                            {
-                                Logger.Warn($"Could not parse response (1) from {Simulator} event queue: \"" +
-                                           responseString + "\"");
-                            }
-                        }
-                    }
-                }
-
-                #region Prepare the next ping
-
-                lock (_payloadLock)
-                {
-                    if (_reqPayloadMap == null) _reqPayloadMap = new OSDMap();
-                    _reqPayloadMap["ack"] = ack;
-
-                    var ctsLocal = Volatile.Read(ref _queueCts);
-                    if (ctsLocal == null || ctsLocal.IsCancellationRequested)
-                    {
-                        // We will fire off one more POST to tell the simulator, that's it we're done.
-                        // Not sure if this even necessary. Only our dark lords know what 'done' does.
-                        _reqPayloadMap["done"] = OSD.FromBoolean(true);
-                    }
-                    else
-                    {
-                        _reqPayloadMap["done"] = OSD.FromBoolean(!Simulator.Connected);
-                    }
-
-                    // reserialize for next request
-                    try
-                    {
-                        _reqPayloadBytes = OSDParser.SerializeLLSDXmlBytes(_reqPayloadMap);
-                    }
-                    catch
-                    {
-                        // If serialization fails for any reason, clear bytes so caller will fallback
-                        _reqPayloadBytes = null;
-                    }
-                }
-
-                #endregion Prepare the next ping
-
-                #region Handle incoming events
-
-                if (OnEvent == null || events == null || events.Count <= 0) { return; }
-                // Fire callbacks for each event received
-                foreach (var osd in events)
-                {
-                    var evt = (OSDMap)osd;
-                    var msg = evt["message"].AsString();
-                    var body = (OSDMap)evt["body"];
-
-                    try
-                    {
-                        // Run handlers on the thread pool to avoid blocking the event loop
-                        Task.Run(() => OnEvent(msg, body));
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.Error(ex.Message, ex);
-                    }
-                }
-
-                #endregion Handle incoming events
+                if (!IsLikelyLLSD(response, responseData))
+                    throw new FormatException("non-LLSD or empty response");
+                if (!(OSDParser.DeserializeLLSDXml(responseData!) is OSDMap parsed)
+                    || !(parsed["events"] is OSDArray batch)
+                    || parsed["id"].Type != OSDType.Integer)
+                    throw new FormatException("expected an integer id and an events array");
+                result = parsed;
+                events = batch;
+                ack = result["id"];
             }
-
-            catch (Exception e)
+            catch (Exception parseError)
             {
-                Logger.Warn($"Exception in EventQueueGet handler; {e.Message}", e);
+                Interlocked.Increment(ref _invalidResponses);
+                Failed($"invalid LLSD response ({responseData?.Length ?? 0} bytes): {DescribeException(parseError)}");
+                return;
             }
+
+            _pendingRetryDelayMs = 0;
+            Interlocked.Exchange(ref _consecutiveFailures, 0);
+            if (!_connectedNotified)
+            {
+                _connectedNotified = true;
+                ConnectedResponseHandler(response);
+            }
+
+            // Already on the background polling task. Dispatch in server order and observe
+            // callback failures before advancing the acknowledgement; Task.Run reordered edits.
+            foreach (OSD item in events)
+            {
+                try
+                {
+                    if (!(item is OSDMap evt) || evt["message"].Type != OSDType.String
+                        || string.IsNullOrEmpty(evt["message"].AsString()) || !(evt["body"] is OSDMap body))
+                        throw new FormatException("event needs a message name and map body");
+                    OnEvent?.Invoke(evt["message"].AsString(), body);
+                    Interlocked.Increment(ref _events);
+                }
+                catch (Exception eventError)
+                {
+                    Interlocked.Increment(ref _invalidEvents);
+                    Volatile.Write(ref _lastFailure, "event dispatch: " + DescribeException(eventError));
+                    Logger.Warn($"Event queue at {Simulator}: {Volatile.Read(ref _lastFailure)}");
+                    // One bad event must not discard all subsequent appearance/object updates.
+                }
+            }
+
+            lock (_payloadLock)
+            {
+                if (_reqPayloadMap == null) _reqPayloadMap = new OSDMap();
+                _reqPayloadMap["ack"] = ack;
+                _reqPayloadMap["done"] = OSD.FromBoolean(!Simulator.Connected);
+                _reqPayloadBytes = OSDParser.SerializeLLSDXmlBytes(_reqPayloadMap);
+            }
+            Interlocked.Increment(ref _batches);
+            Interlocked.Exchange(ref _lastSuccessTicks, DateTime.UtcNow.Ticks);
         }
     }
 }
-

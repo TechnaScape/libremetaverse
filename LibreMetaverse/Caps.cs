@@ -371,7 +371,9 @@ namespace LibreMetaverse
             IMessage? message = Messages.MessageUtils.DecodeEvent(eventName, body);
             if (message != null)
             {
-                Simulator.Client.Network.CapsEvents.BeginRaiseEvent(eventName, message, Simulator);
+                // The event queue already runs in the background and preserves batch order.
+                // Dispatching each decoded event to another task reverses successive edits.
+                Simulator.Client.Network.CapsEvents.RaiseEvent(eventName, message, Simulator);
 
                 #region Stats Tracking
                 if (Simulator.Client.Settings.Packets.TrackUtilization)
@@ -439,4 +441,3 @@ namespace LibreMetaverse
 
     #endregion
 }
-
