@@ -114,6 +114,40 @@ namespace LibreMetaverse.Tests
         }
 
         [Test]
+        public void ClearingOverridesPublishesTheClearedStateToConsumers()
+        {
+            const uint localId = 1021;
+            var prim = _client.Objects.GetPrimitive(_sim, localId, UUID.Random(), true);
+            RaiseOverrideMessage(_client, _sim, BuildPayload(localId, (0, SimpleOverride(new Color4(.2f, .3f, .4f, 1)))));
+            GLTFMaterialOverrideEventArgs? received = null;
+            _client.Objects.GLTFMaterialOverrideReceived += (_, args) => received = args;
+            RaiseOverrideMessage(_client, _sim, BuildPayload(localId));
+            Assert.That(received, Is.Not.Null, "clearing an edit must refresh an already rendered object");
+            Assert.That(received!.Override.ObjectID, Is.EqualTo(prim.ID));
+            Assert.That(received.Override.FaceOverrides, Is.Empty);
+            Assert.That(prim.Textures!.GetFace(0).MaterialOverride, Is.Null);
+        }
+
+        [Test]
+        public void StreamingEditPublishesOnThePacketPumpBeforeTheNextObjectPacket()
+        {
+            var packet = new GenericStreamingMessagePacket();
+            packet.MethodData.Method = (ushort)GenericStreamingMethod.GltfMaterialOverride;
+            packet.DataBlock.Data = Encoding.UTF8.GetBytes(OSDParser.SerializeLLSDNotation(
+                BuildPayload(1022, (0, SimpleOverride(new Color4(.2f, .3f, .4f, 1))))));
+            int thread = 0;
+            using var completed = new System.Threading.ManualResetEventSlim();
+            _client.Objects.GLTFMaterialOverrideReceived += (_, _) => {
+                thread = System.Environment.CurrentManagedThreadId;
+                completed.Set();
+            };
+            _client.Network.PacketEvents.InvokeRaiseEvent(PacketType.GenericStreamingMessage, packet, _sim);
+            Assert.That(completed.Wait(System.TimeSpan.FromSeconds(5)), Is.True);
+            Assert.That(thread, Is.EqualTo(System.Environment.CurrentManagedThreadId),
+                "a pool callback can edit the primitive after a later full/kill packet");
+        }
+
+        [Test]
         public void GenericStreamingMessage_TrackedObject_CachesEntryOnSimulator()
         {
             var localId = 1002u;

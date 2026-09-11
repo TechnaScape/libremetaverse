@@ -163,6 +163,9 @@ namespace LibreMetaverse
                 {
                     ClearFaceOverrides(prim.Textures, previous.FaceOverrides.Keys);
                 }
+                OnGLTFMaterialOverrideReceived(new GLTFMaterialOverrideEventArgs(simulator,
+                    new GLTFMaterialOverrideCacheEntry(localId, prim?.ID ?? UUID.Zero, simulator.Handle,
+                        new Dictionary<int, AssetMaterial>())));
                 return;
             }
 
