@@ -292,7 +292,10 @@ namespace LibreMetaverse
             }
 
             // Read in position keyframes
-            var positions = readKeys(data, ref i, positionkeys, -0.5f, 1.5f);
+            // LLKeyframeMotion::deserialize / LL_MAX_PELVIS_OFFSET: every joint's position
+            // keys span -5..5 metres. The old asymmetric range turned zero into +0.5 m,
+            // stretching animated attachments by another half metre at every joint.
+            var positions = readKeys(data, ref i, positionkeys, -5.0f, 5.0f);
 
             pJoint.rotationkeys = rotations;
             pJoint.positionkeys = positions;
@@ -337,14 +340,15 @@ namespace LibreMetaverse
                 binBVHJointKey pJKey = new binBVHJointKey();
                 if (!BitConverter.IsLittleEndian)
                 {
-                    pJKey.time = Utils.UInt16ToFloat(EndianSwap(data, i, 2), 0, InPoint, OutPoint); i += 2;
+                    pJKey.time = Utils.UInt16ToFloat(EndianSwap(data, i, 2), 0, 0f, Length); i += 2;
                     x = Utils.UInt16ToFloat(EndianSwap(data, i, 2), 0, min, max); i += 2;
                     y = Utils.UInt16ToFloat(EndianSwap(data, i, 2), 0, min, max); i += 2;
                     z = Utils.UInt16ToFloat(EndianSwap(data, i, 2), 0, min, max); i += 2;
                 }
                 else
                 {
-                    pJKey.time = Utils.UInt16ToFloat(data, i, InPoint, OutPoint); i += 2;
+                    // Key times span the asset duration, independently of its loop window.
+                    pJKey.time = Utils.UInt16ToFloat(data, i, 0f, Length); i += 2;
                     x = Utils.UInt16ToFloat(data, i, min, max); i += 2;
                     y = Utils.UInt16ToFloat(data, i, min, max); i += 2;
                     z = Utils.UInt16ToFloat(data, i, min, max); i += 2;
