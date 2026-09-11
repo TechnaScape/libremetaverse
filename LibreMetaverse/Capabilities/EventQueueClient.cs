@@ -42,6 +42,17 @@ namespace LibreMetaverse.Http
         private const int InitialEqRetryDelayMs = 1_000;
         private const int MaxEqRetryDelayMs = 30_000;
 
+        // [SLUnity] A simulator holds a poll for twenty to thirty seconds and then ends it however
+        // its proxies happen to: 499, 500, 502 to 504, or -- on this runtime -- a dropped connection
+        // that Mono reports as ReceiveFailure. Held this long, any of them means "no events", and the
+        // reference re-polls at once (MIN_SECONDS_PASSED, lleventpoll.cpp); only an early end is a
+        // failure. Counting the ordinary end as one backed every quiet neighbour off to twenty or
+        // thirty seconds, so the first events it sent after the agent crossed into it waited that long.
+        private const double MinimumHeldSeconds = 10.0;
+
+        // How long the request being handled was held. Written and read on the polling task only.
+        private double _heldSeconds;
+
         // Milliseconds to wait before the next request; written by RequestCompletedHandler,
         // read by the polling loop and reset only after recovery. Accessed from the EQ task so no
         // Interlocked is needed, but volatile prevents stale reads across the await boundary.
@@ -204,6 +215,7 @@ namespace LibreMetaverse.Http
                         }
                     }
 
+                    var held = System.Diagnostics.Stopwatch.StartNew();
                     try
                     {
                         var (response, data) = await Simulator.Client.HttpCapsClient.PostAsync(
@@ -211,14 +223,17 @@ namespace LibreMetaverse.Http
                             // overload implicitly converts byte[] to OSDBinary and serializes
                             // it again, hiding ack/done from the server inside a binary value.
                             Address, HttpCapsClient.LLSD_XML, payloadSnapshot, token).ConfigureAwait(false);
+                        _heldSeconds = held.Elapsed.TotalSeconds;
                         RequestCompletedHandler(response, data, null);
                     }
                     catch (OperationCanceledException timeout) when (!token.IsCancellationRequested)
                     {
+                        _heldSeconds = held.Elapsed.TotalSeconds;
                         RequestCompletedHandler(null, null, timeout);
                     }
                     catch (Exception innerEx) when (!(innerEx is OperationCanceledException))
                     {
+                        _heldSeconds = held.Elapsed.TotalSeconds;
                         RequestCompletedHandler(null, null, innerEx);
                     }
                 }
@@ -363,6 +378,20 @@ namespace LibreMetaverse.Http
             return false;
         }
 
+        private bool HeldLikeALongPoll => _heldSeconds >= MinimumHeldSeconds;
+
+        // lleventpoll.cpp: a timeout, 500, 502, 503 or 504 held that long is "no events", and its
+        // comment names Linden's own 499 as the same thing.
+        private static bool IsLongPollEnding(int status)
+            => status == 499 || status == 500 || status == 502 || status == 503 || status == 504;
+
+        private void Idle()
+        {
+            Interlocked.Increment(ref _normalTimeouts);
+            _pendingRetryDelayMs = 0;
+            Interlocked.Exchange(ref _consecutiveFailures, 0);
+        }
+
         private static string DescribeException(Exception error)
         {
             var detail = new System.Text.StringBuilder();
@@ -383,11 +412,12 @@ namespace LibreMetaverse.Http
             Volatile.Write(ref _lastFailure, reason);
             _pendingRetryDelayMs = NextRetryDelay(_pendingRetryDelayMs);
 
-            // [SLUnity] A region's event queue dropping its long poll is routine -- simulators and
-            // the proxies in front of them close them, and the next poll carries on from the last
-            // acknowledgement. Only a run of failures is worth a warning; the first two are
-            // information, or a viewer's error console fills with the network doing its job.
-            string line = $"Event queue at {Simulator}: {reason}; retry in {_pendingRetryDelayMs} ms";
+            // [SLUnity] A poll the simulator held and then ended never reaches here (see
+            // MinimumHeldSeconds). What does -- an early end, a refusal, a bad batch -- is still
+            // usually a blip the next poll carries on from, so only a run of them is worth a
+            // warning; the first two are information.
+            string held = _heldSeconds.ToString("F1", System.Globalization.CultureInfo.InvariantCulture);
+            string line = $"Event queue at {Simulator}: {reason} after {held} s; retry in {_pendingRetryDelayMs} ms";
             if (Interlocked.Increment(ref _consecutiveFailures) <= 2) Logger.Info(line);
             else Logger.Warn(line);
         }
@@ -398,11 +428,9 @@ namespace LibreMetaverse.Http
 
             if (error != null)
             {
-                if (IsIdleTimeout(error))
+                if (IsIdleTimeout(error) || HeldLikeALongPoll)
                 {
-                    Interlocked.Increment(ref _normalTimeouts);
-                    _pendingRetryDelayMs = 0;
-                    Interlocked.Exchange(ref _consecutiveFailures, 0);
+                    Idle();
                 }
                 else
                 {
@@ -414,19 +442,24 @@ namespace LibreMetaverse.Http
 
             if (response?.IsSuccessStatusCode != true)
             {
-                Interlocked.Increment(ref _httpFailures);
                 int status = response == null ? 0 : (int)response.StatusCode;
                 if (status == 404 || status == 410)
                 {
+                    Interlocked.Increment(ref _httpFailures);
                     Volatile.Write(ref _lastFailure, $"HTTP {status}: capability expired");
                     Logger.Info($"Closing event queue at {Simulator}: HTTP {status}");
                     var source = Volatile.Read(ref _queueCts);
                     try { source?.Cancel(); } catch (ObjectDisposedException) { }
                 }
+                else if (HeldLikeALongPoll && IsLongPollEnding(status))
+                {
+                    // The simulator's "no events". No HTTP error is a batch to acknowledge.
+                    Idle();
+                }
                 else
                 {
-                    // Long-poll proxies often return 499/502 on timeout. Retry these too;
-                    // no HTTP error response is a new batch to acknowledge.
+                    Interlocked.Increment(ref _httpFailures);
+                    // An early end. No HTTP error response is a new batch to acknowledge.
                     Failed($"HTTP {status} ({responseData?.Length ?? 0} bytes)");
                 }
                 return;

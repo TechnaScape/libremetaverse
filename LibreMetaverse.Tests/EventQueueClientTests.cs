@@ -143,5 +143,49 @@ namespace LibreMetaverse.Tests
             Receive(HttpStatusCode.OK, Batch(8, new OSDArray { Event("bad"), Event("next") }));
             Assert.That(delivered, Is.EqualTo(new[] { "next" }));
         }
+
+        private void Held(double seconds) =>
+            typeof(EventQueueClient).GetField("_heldSeconds", Private)!.SetValue(_queue, seconds);
+
+        private int RetryMs =>
+            (int)typeof(EventQueueClient).GetField("_pendingRetryDelayMs", Private)!.GetValue(_queue)!;
+
+        private static Exception DroppedConnection() =>
+            new HttpRequestException("An error occurred while sending the request",
+                new WebException("Error getting response stream (ReadDoneAsync2): ReceiveFailure",
+                    WebExceptionStatus.ReceiveFailure));
+
+        [TestCase(499)]
+        [TestCase(500)]
+        [TestCase(502)]
+        [TestCase(504)]
+        public void APollTheSimulatorHeldAndThenEndedIsNoEventsRatherThanAFailure(int status)
+        {
+            Receive(HttpStatusCode.OK, Batch(42, new OSDArray()));
+            Held(30);
+            Receive((HttpStatusCode)status, new byte[341]);
+            Assert.That(RetryMs, Is.Zero, "a quiet region's poll is re-issued at once, as the reference does");
+            Assert.That(Ack.AsInteger(), Is.EqualTo(42));
+        }
+
+        [Test]
+        public void AConnectionDroppedAfterTheHoldIsNoEventsToo()
+        {
+            // How Mono reports a simulator ending an idle poll by closing the connection.
+            Held(30);
+            Receive(HttpStatusCode.OK, null, DroppedConnection());
+            Assert.That(RetryMs, Is.Zero);
+        }
+
+        [Test]
+        public void AnEarlyEndIsStillAFailureAndBacksOff()
+        {
+            Held(0.5);
+            Receive(HttpStatusCode.InternalServerError, new byte[341]);
+            Assert.That(RetryMs, Is.GreaterThan(0));
+            Held(0.5);
+            Receive(HttpStatusCode.OK, null, DroppedConnection());
+            Assert.That(RetryMs, Is.GreaterThan(1_000), "a second early end backs off further");
+        }
     }
 }
