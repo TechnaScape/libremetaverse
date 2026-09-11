@@ -926,6 +926,11 @@ namespace LibreMetaverse
         }
 
         /// <summary>
+        /// How long a simulator that never acknowledged UseCircuitCode still gets to handshake. [SLUnity]
+        /// </summary>
+        private const int UnacknowledgedHandshakeGraceMs = 5000;
+
+        /// <summary>
         /// Attempt to connect to this simulator (async variant)
         /// </summary>
         public async Task<bool> ConnectAsync(bool moveToSim)
@@ -954,7 +959,7 @@ namespace LibreMetaverse
                 connected = true;
 
                 // Initiate connection
-                await UseCircuitCodeAsync(true).ConfigureAwait(false);
+                bool acknowledged = await UseCircuitCodeAsync(true).ConfigureAwait(false);
 
                 Stats.SetConnectTime(Environment.TickCount);
 
@@ -966,12 +971,25 @@ namespace LibreMetaverse
                 }
 
                 // Wait for handshake event asynchronously
-                bool signaled = await WaitHandleAsyncFactory.FromWaitHandle(ConnectedEvent.WaitHandle, TimeSpan.FromMilliseconds(Client.Settings.Timing.LoginTimeout)).ConfigureAwait(false);
+                // A simulator that acknowledged nothing for the whole login timeout does not know
+                // this circuit code and is not going to handshake either, so it gets a short grace
+                // rather than a second full timeout. [SLUnity]
+                int handshakeWait = acknowledged
+                    ? Client.Settings.Timing.LoginTimeout
+                    : UnacknowledgedHandshakeGraceMs;
+                bool signaled = await WaitHandleAsyncFactory.FromWaitHandle(ConnectedEvent.WaitHandle, TimeSpan.FromMilliseconds(handshakeWait)).ConfigureAwait(false);
                 if (!signaled)
                 {
                     Logger.Warn($"Giving up waiting for RegionHandshake for {this}", Client);
                     //Remove the simulator from the list, not useful if we haven't received the RegionHandshake
                     Client.Network.RemoveSimulator(this);
+
+                    // Fail rather than fall through. Returning true here made a region that never
+                    // answered the current simulator: a login "succeeded" into a region with no
+                    // objects, and a region crossing the state machine had already abandoned
+                    // switched the agent into a dead region when this finally returned. [SLUnity]
+                    Disconnect(false);
+                    return false;
                 }
 
                 // Start periodic background tasks for ACKs, stats and pings

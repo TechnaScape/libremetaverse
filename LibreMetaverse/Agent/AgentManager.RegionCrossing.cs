@@ -113,7 +113,11 @@ namespace LibreMetaverse
         // Not held across awaits — acquired briefly, released before any async work begins.
         private readonly SemaphoreSlim _stateLock = new SemaphoreSlim(1, 1);
         private Timer? _crossingTimeoutTimer;
-        private const int CrossingTimeoutMs = 30000;
+        // Longer than one connection attempt can block for (the login timeout waiting for the
+        // UseCircuitCode acknowledgement, plus Simulator's short handshake grace), so the timer
+        // cannot declare a crossing dead while its only attempt is still waiting for the region
+        // to answer. At 30 s it fired mid-attempt whenever a region was slow. [SLUnity]
+        private const int CrossingTimeoutMs = 90000;
         private const int RetryDelayMs = 1000;
 
         private void InitializeCrossingStateMachine()
@@ -257,9 +261,24 @@ namespace LibreMetaverse
                 Simulator? newSim;
                 try
                 {
+                    // In two steps. [SLUnity] The first opens (or finds) the circuit WITHOUT making
+                    // it the current simulator, and blocks for as long as the region takes to
+                    // answer -- over a minute for one that never does. Making it current in the same
+                    // call is what let an attempt the state machine had long since abandoned switch
+                    // the agent into a dead region when it finally returned.
                     newSim = Client?.Network?.Connect(
-                        crossing.EndPoint, crossing.RegionHandle, true, crossing.SeedCapability,
+                        crossing.EndPoint, crossing.RegionHandle, false, crossing.SeedCapability,
                         crossing.RegionSizeX, crossing.RegionSizeY);
+
+                    // Only a crossing that is still this one and still connecting moves the agent
+                    // in. The second call finds the circuit open and takes the library's "already
+                    // connected" path: UseCircuitCode, CompleteAgentMovement, then SetCurrentSim.
+                    if (newSim != null && IsStillConnecting(crossing, token))
+                    {
+                        newSim = Client?.Network?.Connect(
+                            crossing.EndPoint, crossing.RegionHandle, true, crossing.SeedCapability,
+                            crossing.RegionSizeX, crossing.RegionSizeY);
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -270,7 +289,13 @@ namespace LibreMetaverse
                     return await TransitionCrossingStateAsync(CrossingState.Recovering, token).ConfigureAwait(false);
                 }
 
-                if (token.IsCancellationRequested) return false;
+                if (!IsStillConnecting(crossing, token))
+                {
+                    // An attempt the state machine gave up on, returning late. It must not move the
+                    // agent anywhere, and after the two-step connect above it cannot have. [SLUnity]
+                    Logger.Info($"Ignoring a region crossing attempt that returned after it was abandoned ({crossing.EndPoint})", Client);
+                    return false;
+                }
 
                 if (newSim != null)
                 {
@@ -307,6 +332,20 @@ namespace LibreMetaverse
                 }
             }
             return false;
+        }
+
+        private bool IsStillConnecting(CrossingInfo crossing, CancellationToken token) =>
+            !token.IsCancellationRequested
+            && ReferenceEquals(_currentCrossing, crossing)
+            && crossing.State == CrossingState.Connecting;
+
+        // Stops anything still running on behalf of a crossing that has reached an end. Without it
+        // an attempt blocked inside Connect carried on after the crossing had failed, retried, and
+        // one that eventually succeeded tried the transition Idle -> WaitingForComplete. [SLUnity]
+        private static void CancelWork(CrossingInfo crossing)
+        {
+            try { crossing.WorkCts.Cancel(); }
+            catch (ObjectDisposedException) { }
         }
 
         private async Task<bool> AttemptRecoveryAsync(CrossingInfo crossing, CancellationToken token)
@@ -365,6 +404,7 @@ namespace LibreMetaverse
         private bool OnCrossingCompleted(CrossingInfo crossing)
         {
             _crossingTimeoutTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+            CancelWork(crossing);
 
             var duration = Client.UtcNow - crossing.StartTime;
             Logger.Info($"Region crossing completed successfully in {duration.TotalSeconds:F2} seconds", Client);
@@ -380,6 +420,7 @@ namespace LibreMetaverse
         private bool OnCrossingFailed(CrossingInfo crossing)
         {
             _crossingTimeoutTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+            CancelWork(crossing);
 
             var duration = Client.UtcNow - crossing.StartTime;
             string failureDetails = $"Region crossing failed after {duration.TotalSeconds:F2} seconds. Reason: {crossing.FailureReason}";
