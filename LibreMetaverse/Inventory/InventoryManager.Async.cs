@@ -1374,40 +1374,10 @@ namespace LibreMetaverse
 
             var result = new CopyItemsResult { Success = false, CopiedItems = new List<InventoryBase>(), Error = null };
 
-            // Try AISv3 Inventory API first
-            var invCap = GetCapabilityURI("InventoryAPIv3", false);
-            if (Client.AisClient.IsAvailable && invCap != null)
-            {
-                try
-                {
-                    var ops = new OSDArray(items.Count);
-                    for (var i = 0; i < items.Count; ++i)
-                    {
-                        var op = new OSDMap
-                        {
-                            ["item_id"] = items[i],
-                            ["folder_id"] = targetFolders[i]
-                        };
-
-                        if (newNames != null && !string.IsNullOrEmpty(newNames[i]))
-                            op["new_name"] = newNames[i];
-
-                        ops.Add(op);
-                    }
-
-                    var payload = new OSDMap { ["items"] = ops, ["agent_id"] = Client.Self.AgentID };
-
-                    // POST and return success if it completes without throwing
-                    await PostCapAsync(invCap, payload, cancellationToken).ConfigureAwait(false);
-                    result.Success = true;
-                    return result;
-                }
-                catch (Exception ex)
-                {
-                    // Fall through to legacy LLUDP path on error
-                    result.Error = ex;
-                }
-            }
+            // CopyInventoryItem supplies a correlated item response. A generic POST to the
+            // AIS root neither supplies that response nor makes a subsequent retry safe.
+            cancellationToken.ThrowIfCancellationRequested();
+            if (items.Count == 0) return result;
 
             // Legacy LLUDP path: register a callback to capture copied items
             var tcs = new TaskCompletionSource<CopyItemsResult>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1484,10 +1454,12 @@ namespace LibreMetaverse
                     return await tcs.Task.ConfigureAwait(false);
                 }
             }
+            catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
                 return new CopyItemsResult { Success = false, CopiedItems = null, Error = ex };
             }
+            finally { _ItemCopiedCallbacks.TryRemove(callbackId, out _); }
         }
     }
 }
