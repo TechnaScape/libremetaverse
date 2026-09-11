@@ -123,7 +123,7 @@ namespace LibreMetaverse
                     return;
                 }
 
-                var capability = Client.Network.CurrentSim.Caps.CapabilityURI(AGENT_PROFILE_CAP);
+                var capability = Client.Network.CurrentSim.Caps?.CapabilityURI(AGENT_PROFILE_CAP);
                 if (capability == null)
                 {
                     Logger.Warn("AgentProfile capability not available, cannot update profile.", Client);
@@ -204,7 +204,7 @@ namespace LibreMetaverse
                     return;
                 }
 
-                var capability = Client.Network.CurrentSim.Caps.CapabilityURI(AGENT_PROFILE_CAP);
+                var capability = Client.Network.CurrentSim.Caps?.CapabilityURI(AGENT_PROFILE_CAP);
                 if (capability == null)
                 {
                     Logger.Warn("AgentProfile capability not available, cannot update profile notes.", Client);

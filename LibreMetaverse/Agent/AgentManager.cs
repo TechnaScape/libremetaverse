@@ -1800,7 +1800,7 @@ namespace LibreMetaverse
                 return;
             }
 
-            Uri? cap = Client.Network.CurrentSim.Caps.CapabilityURI("SetDisplayName");
+            Uri? cap = Client.Network.CurrentSim.Caps?.CapabilityURI("SetDisplayName");
             if (cap == null)
             {
                 Logger.Warn("Unable to obtain capability to set display name.", Client);
@@ -1855,7 +1855,7 @@ namespace LibreMetaverse
             {
                 ["access_prefs"] = new OSDMap { ["max"] = access }
             };
-            Uri? cap = Client.Network.CurrentSim.Caps.CapabilityURI("UpdateAgentInformation");
+            Uri? cap = Client.Network.CurrentSim.Caps?.CapabilityURI("UpdateAgentInformation");
             if (cap == null)
                 return new AgentAccessEventArgs(false, AgentAccess);
 
@@ -2064,7 +2064,7 @@ namespace LibreMetaverse
 
             var postData = new OSDMap { ["hover_height"] = hoverHeight };
 
-            Uri? cap = Client.Network.CurrentSim.Caps.CapabilityURI("AgentPreferences");
+            Uri? cap = Client.Network.CurrentSim.Caps?.CapabilityURI("AgentPreferences");
             if (cap == null) { return; }
 
             try

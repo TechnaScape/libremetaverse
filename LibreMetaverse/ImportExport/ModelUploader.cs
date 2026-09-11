@@ -186,7 +186,7 @@ namespace LibreMetaverse.ImportExport
             Uri? cap = null;
             if (Client.Network.CurrentSim == null ||
                 Client.Network.CurrentSim.Caps == null ||
-                (cap = Client.Network.CurrentSim.Caps.CapabilityURI("NewFileAgentInventory")) == null)
+                (cap = Client.Network.CurrentSim.Caps?.CapabilityURI("NewFileAgentInventory")) == null)
             {
                 Logger.Warn("Cannot upload mesh, no connection or NewFileAgentInventory not available");
                 return null;

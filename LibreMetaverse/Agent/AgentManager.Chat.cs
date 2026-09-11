@@ -440,7 +440,7 @@ namespace LibreMetaverse
                 throw new Exception("ChatSessionRequest capability is not currently available");
             }
 
-                Uri? cap = Client.Network.CurrentSim.Caps.CapabilityURI("ChatSessionRequest");
+                Uri? cap = Client.Network.CurrentSim.Caps?.CapabilityURI("ChatSessionRequest");
             if (cap != null)
             {
                 ChatSessionAcceptInvitation acceptInvite = new ChatSessionAcceptInvitation {SessionID = session_id};
@@ -461,7 +461,7 @@ namespace LibreMetaverse
             if (Client.Network.CurrentSim == null || Client.Network.CurrentSim.Caps == null)
                 throw new Exception("ChatSessionRequest capability is not currently available");
 
-            Uri? cap = Client.Network.CurrentSim.Caps.CapabilityURI("ChatSessionRequest");
+            Uri? cap = Client.Network.CurrentSim.Caps?.CapabilityURI("ChatSessionRequest");
             if (cap == null)
                 throw new Exception("ChatSessionRequest capability is not currently available");
 

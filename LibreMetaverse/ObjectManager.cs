@@ -2265,7 +2265,7 @@ namespace LibreMetaverse
                 return new List<LegacyMaterial>();
             }
 
-            var uri = sim.Caps.CapabilityURI("RenderMaterials");
+            var uri = sim.Caps?.CapabilityURI("RenderMaterials");
 
             if (uri == null)
             {
@@ -2384,7 +2384,7 @@ namespace LibreMetaverse
                 {"Zipped", Helpers.ZCompressOSD(array)}
             });
 
-            var uri = sim.Caps.CapabilityURI("RenderMaterials");
+            var uri = sim.Caps?.CapabilityURI("RenderMaterials");
 
             if (uri == null)
             {
