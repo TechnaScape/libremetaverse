@@ -38,6 +38,20 @@ namespace LibreMetaverse.Animesh
         /// <summary>UUID of the animation asset.</summary>
         public UUID AnimationID { get; }
 
+        /// <summary>The most recently received simulator sequence for this animation.</summary>
+        /// <remarks>
+        /// The UUID identifies the asset, not one playback.  A script can restart the same
+        /// animation asset with a new sequence number, and retaining the finished clock from the
+        /// previous playback leaves the animated object frozen at its last keyframe.
+        /// </remarks>
+        public int Sequence { get; private set; }
+
+        /// <summary>Re-signals received, including those that correctly kept playing.</summary>
+        public int SequenceChanges { get; private set; }
+
+        /// <summary>Finished motions actually restarted by a new sequence.</summary>
+        public int Restarts { get; private set; }
+
         /// <summary>
         /// Parsed animation data.  Null until the asset has been downloaded and decoded.
         /// Joints are evaluated only when this is non-null.
@@ -47,12 +61,46 @@ namespace LibreMetaverse.Animesh
         /// <summary>Current playback position in seconds.</summary>
         public float CurrentTime { get; private set; }
 
-        /// <summary>True once a non-looping animation has played past its <see cref="BinBVHAnimationReader.OutPoint"/>.</summary>
+        /// <summary>Time since this playback started; does not wrap at a loop boundary.</summary>
+        public float ElapsedTime { get; private set; }
+
+        /// <summary>True once a non-looping animation has played its full duration.</summary>
         public bool IsFinished { get; private set; }
 
-        internal AnimationTrack(UUID id)
+        // Diagnostics must not advance the live playback clock. Decoded asset data is shared
+        // read-only; sequence, playback time and finished state are detached.
+        internal AnimationTrack DiagnosticSnapshot() => new AnimationTrack(AnimationID, Sequence)
+        {
+            Data = Data, CurrentTime = CurrentTime, ElapsedTime = ElapsedTime, IsFinished = IsFinished,
+            SequenceChanges = SequenceChanges, Restarts = Restarts,
+        };
+
+        internal AnimationTrack(UUID id, int sequence = 0)
         {
             AnimationID = id;
+            Sequence = sequence;
+        }
+
+        /// <summary>Accepts a re-signal, restarting only an already finished motion.</summary>
+        /// <returns>True when the clock was restarted.</returns>
+        internal bool AcceptSequence(int sequence)
+        {
+            if (sequence == Sequence) return false;
+
+            Sequence = sequence;
+            SequenceChanges++;
+            // A new sequence is a request to start, not proof the current motion stopped.
+            // LLControlAvatar uses the same LLMotionController as ordinary avatars; its
+            // startMotion lets an active motion continue (llmotioncontroller.cpp:430).
+            // Resetting here makes a looping pet jump to its first frame whenever its script
+            // re-signals it. A genuinely removed track is recreated by the player instead.
+            if (!IsFinished) return false;
+
+            Restarts++;
+            CurrentTime = 0f;
+            ElapsedTime = 0f;
+            IsFinished = false;
+            return true;
         }
 
         /// <summary>
@@ -63,6 +111,8 @@ namespace LibreMetaverse.Animesh
         public void Advance(float dt)
         {
             if (Data == null || IsFinished) return;
+            dt = Math.Max(0f, dt);
+            ElapsedTime += dt;
             CurrentTime += dt;
 
             if (Data.Loop)
@@ -70,10 +120,12 @@ namespace LibreMetaverse.Animesh
                 float span = Data.OutPoint - Data.InPoint;
                 if (span > 0f && CurrentTime > Data.OutPoint)
                     CurrentTime = Data.InPoint + (CurrentTime - Data.InPoint) % span;
+                else if (span <= 0f)
+                    CurrentTime = Math.Min(CurrentTime, Math.Max(0f, Data.Length));
             }
-            else if (CurrentTime >= Data.OutPoint)
+            else if (CurrentTime >= Data.Length)
             {
-                CurrentTime = Data.OutPoint;
+                CurrentTime = Math.Max(0f, Data.Length);
                 IsFinished = true;
             }
         }
@@ -87,12 +139,14 @@ namespace LibreMetaverse.Animesh
             get
             {
                 if (Data == null) return 0f;
-                float t = CurrentTime;
+                float t = ElapsedTime;
                 if (Data.EaseInTime > 0f && t < Data.EaseInTime)
                     return t / Data.EaseInTime;
-                float easeOutStart = Data.OutPoint - Data.EaseOutTime;
-                if (Data.EaseOutTime > 0f && t > easeOutStart)
-                    return Math.Max(0f, (Data.OutPoint - t) / Data.EaseOutTime);
+                // A loop (including a zero-duration static pose) stays active until the
+                // simulator removes it. The loop endpoint is not a request to ease out.
+                float easeOutStart = Data.Length - Data.EaseOutTime;
+                if (!Data.Loop && Data.EaseOutTime > 0f && t > easeOutStart)
+                    return Math.Max(0f, (Data.Length - t) / Data.EaseOutTime);
                 return 1f;
             }
         }
@@ -113,6 +167,7 @@ namespace LibreMetaverse.Animesh
             if (Data == null) return;
             float t = CurrentTime;
             float ease = EaseWeight;
+            if (ease <= 0f) return;
 
             foreach (var joint in Data.joints)
             {
@@ -126,24 +181,8 @@ namespace LibreMetaverse.Animesh
 
                 if (rot == null && pos == null) continue;
 
-                if (pose.TryGetValue(joint.Name, out var existing))
-                {
-                    if (joint.Priority < existing.Priority) continue;
-
-                    if (joint.Priority == existing.Priority)
-                    {
-                        // Equal priority: blend by ease weight.
-                        float total = existing.EaseWeight + ease;
-                        float myWeight = total > 0f ? ease / total : 0.5f;
-
-                        if (rot.HasValue && existing.HasRotation)
-                            rot = Quaternion.Slerp(existing.Rotation, rot.Value, myWeight);
-                        if (pos.HasValue && existing.HasPosition)
-                            pos = Vector3.Lerp(existing.Position, pos.Value, myWeight);
-                    }
-                }
-
-                pose[joint.Name] = new JointPose
+                pose.TryGetValue(joint.Name, out var existing);
+                pose[joint.Name] = JointPose.Merge(existing, new JointPose
                 {
                     Rotation    = rot ?? Quaternion.Identity,
                     HasRotation = rot.HasValue,
@@ -151,7 +190,7 @@ namespace LibreMetaverse.Animesh
                     HasPosition = pos.HasValue,
                     Priority    = joint.Priority,
                     EaseWeight  = ease,
-                };
+                });
             }
         }
 

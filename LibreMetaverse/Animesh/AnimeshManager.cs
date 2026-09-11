@@ -50,10 +50,38 @@ namespace LibreMetaverse.Animesh
         private readonly ConcurrentDictionary<UUID, AnimeshPlayer> _players
             = new ConcurrentDictionary<UUID, AnimeshPlayer>();
 
+        // ObjectAnimation state is commonly repeated while an animation asset is still in flight.
+        // Without this guard every repeat opened another HTTP/UDP request and decoded the same BVH
+        // again, producing both load spikes and nondeterministic late completion order.
+        private readonly ConcurrentDictionary<AnimationRequest, byte> _fetching
+            = new ConcurrentDictionary<AnimationRequest, byte>();
+
+        private readonly struct AnimationRequest : IEquatable<AnimationRequest>
+        {
+            public readonly UUID ObjectID;
+            public readonly UUID AnimationID;
+
+            public AnimationRequest(UUID objectID, UUID animationID)
+            {
+                ObjectID = objectID;
+                AnimationID = animationID;
+            }
+
+            public bool Equals(AnimationRequest other)
+                => ObjectID == other.ObjectID && AnimationID == other.AnimationID;
+
+            public override bool Equals(object? obj)
+                => obj is AnimationRequest other && Equals(other);
+
+            public override int GetHashCode()
+                => HashCode.Combine(ObjectID, AnimationID);
+        }
+
         internal AnimeshManager(GridClient client)
         {
             _client = client;
             _client.Objects.ObjectAnimation += OnObjectAnimation;
+            _client.Objects.KillObject += OnKillObject;
         }
 
         // ── Public API ────────────────────────────────────────────────────────
@@ -76,8 +104,10 @@ namespace LibreMetaverse.Animesh
         /// </summary>
         public void Update(float dt)
         {
-            foreach (var player in _players.Values)
-                player.Update(dt);
+            // Values copies the ConcurrentDictionary to a collection and takes all its locks.
+            // Enumerating pairs is safe during packet arrivals and avoids that per-frame copy.
+            foreach (var player in _players)
+                player.Value.Update(dt);
         }
 
         /// <summary>
@@ -85,33 +115,37 @@ namespace LibreMetaverse.Animesh
         /// </summary>
         public void RemovePlayer(UUID objectID) => _players.TryRemove(objectID, out _);
 
+        /// <summary>Drops playback state before ObjectManager forgets the killed primitive.</summary>
+        private void OnKillObject(object? sender, KillObjectEventArgs e)
+        {
+            if (e?.Simulator == null) return;
+
+            if (e.Simulator.ObjectsPrimitives.TryGetValue(e.ObjectLocalID, out Primitive? prim)
+                && prim != null && prim.ID != UUID.Zero)
+            {
+                RemovePlayer(prim.ID);
+            }
+        }
+
         // ── ObjectAnimation handler ───────────────────────────────────────────
 
         private void OnObjectAnimation(object? sender, ObjectAnimationEventArgs e)
         {
             var player = _players.GetOrAdd(e.ObjectID, id => new AnimeshPlayer(id));
 
-            // Build the new active set so we can prune stopped animations.
-            var activeIDs = new HashSet<UUID>(e.Animations.Count);
-            foreach (var anim in e.Animations)
-                activeIDs.Add(anim.AnimationID);
-
-            player.RetainOnly(activeIDs);
-
-            foreach (var anim in e.Animations)
+            foreach (AnimationTrack track in player.ApplyAnimations(e.Animations))
             {
-                var track = player.GetOrAddTrack(anim.AnimationID);
-
-                if (track.Data != null) continue;
-
                 // Request the animation asset; decode it when it arrives.
-                UUID animID = anim.AnimationID;
-                _ = FetchAndApplyAsync(player, animID);
+                UUID animID = track.AnimationID;
+                var request = new AnimationRequest(e.ObjectID, animID);
+                if (_fetching.TryAdd(request, 0))
+                    _ = FetchAndApplyAsync(player, animID, request);
             }
         }
         // ── Asset fetching ────────────────────────────────────────────────────
 
-        private async Task FetchAndApplyAsync(AnimeshPlayer player, UUID animID)
+        private async Task FetchAndApplyAsync(AnimeshPlayer player, UUID animID,
+            AnimationRequest request)
         {
             try
             {
@@ -122,14 +156,17 @@ namespace LibreMetaverse.Animesh
 
                 var decoded = new BinBVHAnimationReader(asset.AssetData);
 
-                // The player may have already discarded this track if the server stopped
-                // the animation before the download finished.
-                var track = player.GetOrAddTrack(animID);
-                track.Data = decoded;
+                // The player may already have discarded this track if the server stopped the
+                // animation before the download finished. Never recreate it from a stale request.
+                player.TryApplyData(animID, decoded);
             }
             catch (Exception ex)
             {
                 Logger.Warn($"[AnimeshManager] Failed to fetch animation {animID}: {ex.Message}");
+            }
+            finally
+            {
+                _fetching.TryRemove(request, out _);
             }
         }
     }

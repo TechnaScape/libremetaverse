@@ -9,7 +9,136 @@ namespace LibreMetaverse.Tests
     [Category("Animesh")]
     public class AnimationTrackTests
     {
+        [Test]
+        public void WirePositionKeysUseSymmetricMetresAndTimesUseFullDuration()
+        {
+            using var stream = new MemoryStream();
+            using var writer = new BinaryWriter(stream);
+            writer.Write((ushort)1);
+            writer.Write((ushort)0);
+            writer.Write(4);
+            writer.Write(10f);
+            writer.Write((byte)0);
+            writer.Write(2f);
+            writer.Write(8f);
+            writer.Write(1);
+            writer.Write(0f);
+            writer.Write(0f);
+            writer.Write(0u);
+            writer.Write(1u);
+            writer.Write(System.Text.Encoding.ASCII.GetBytes("mTail2\0"));
+            writer.Write(4);
+            writer.Write(2);
+            foreach (ushort time in new ushort[] { 0, 65535 })
+            {
+                writer.Write(time);
+                writer.Write((ushort)32767);
+                writer.Write((ushort)32767);
+                writer.Write((ushort)32767);
+            }
+            writer.Write(1);
+            writer.Write((ushort)32767);
+            writer.Write((ushort)0);
+            writer.Write((ushort)32767);
+            writer.Write((ushort)65535);
+            writer.Flush();
+
+            var decoded = new BinBVHAnimationReader(stream.ToArray());
+            var joint = decoded.joints[0];
+            Assert.That(joint.rotationkeys[0].time, Is.Zero);
+            Assert.That(joint.rotationkeys[1].time, Is.EqualTo(10f));
+            Assert.That(joint.positionkeys[0].time, Is.EqualTo(5f).Within(.001f));
+            Assert.That(joint.positionkeys[0].key_element.X, Is.EqualTo(-5f));
+            Assert.That(joint.positionkeys[0].key_element.Y, Is.EqualTo(0f).Within(.0002f),
+                "a zero offset must not add half a metre to every Animesh joint");
+            Assert.That(joint.positionkeys[0].key_element.Z, Is.EqualTo(5f));
+
+            var track = new AnimationTrack(UUID.Random()) { Data = decoded };
+            var pose = new Dictionary<string, JointPose>();
+            track.Advance(5f);
+            track.EvaluatePose(pose);
+            Assert.That(pose["mTail2"].Position.Y, Is.EqualTo(0f).Within(.0002f));
+        }
+
         // ── Helpers ────────────────────────────────────────────────────────────
+
+        // Reduced from the Pazuta F8 capture: the base pose repositions mNeck, while
+        // a higher-priority track has only rotation keys for the same joint.
+        [TestCase(false)]
+        [TestCase(true)]
+        public void RotationOnlyTrackPreservesLowerPriorityPosition(bool reverse)
+        {
+            var position = PoseTrack(2, new Vector3(.06691074f, 0f, -.2048521f), null);
+            var rotation = PoseTrack(3, null, new Vector3(0f, .08302438f, 0f));
+            var pose = new Dictionary<string, JointPose>();
+            (reverse ? rotation : position).EvaluatePose(pose);
+            (reverse ? position : rotation).EvaluatePose(pose);
+            Assert.That(pose["mNeck"].HasPosition, Is.True);
+            Assert.That(pose["mNeck"].HasRotation, Is.True);
+            Assert.That(pose["mNeck"].Position.Z, Is.EqualTo(-.2048521f).Within(1e-6f));
+            Assert.That(pose["mNeck"].Rotation.Y, Is.EqualTo(.08302438f).Within(1e-6f));
+        }
+
+        [Test]
+        public void EqualPriorityChannelsAverageAllContributorsWithoutWeightFromOtherChannel()
+        {
+            var pose = new Dictionary<string, JointPose>();
+            PoseTrack(2, new Vector3(1, 0, 0), null).EvaluatePose(pose);
+            PoseTrack(2, null, Vector3.Zero).EvaluatePose(pose);
+            PoseTrack(2, new Vector3(3, 0, 0), null).EvaluatePose(pose);
+            PoseTrack(2, new Vector3(5, 0, 0), null).EvaluatePose(pose);
+            Assert.That(pose["mNeck"].Position.X, Is.EqualTo(3f).Within(1e-6f));
+        }
+
+        [Test]
+        public void ZeroDurationLoopHoldsPoseAfterEaseIn()
+        {
+            var track = MakeTrack(outPoint: 0f, loop: true, easeIn: .8f, easeOut: .8f);
+            track.Advance(.4f);
+            Assert.That(track.EaseWeight, Is.EqualTo(.5f).Within(1e-6f));
+            track.Advance(43.67378f);
+            Assert.That(track.IsFinished, Is.False);
+            Assert.That(track.EaseWeight, Is.EqualTo(1f));
+        }
+
+        [Test]
+        public void LoopDoesNotEaseOutOrRestartEaseInAtEveryWrap()
+        {
+            var track = MakeTrack(outPoint: 1f, loop: true, easeIn: .4f, easeOut: .4f);
+            track.Advance(.9f);
+            Assert.That(track.EaseWeight, Is.EqualTo(1f));
+            track.Advance(.2f);
+            Assert.That(track.CurrentTime, Is.EqualTo(.1f).Within(1e-5f));
+            Assert.That(track.EaseWeight, Is.EqualTo(1f));
+        }
+
+        [Test]
+        public void NonLoopingPlaybackUsesDurationNotLoopWindow()
+        {
+            var track = MakeTrack(inPoint: 2f, outPoint: 8f, easeOut: 1f);
+            track.Data!.Length = 10f;
+            track.Advance(8.5f);
+            Assert.That(track.IsFinished, Is.False);
+            Assert.That(track.EaseWeight, Is.EqualTo(1f));
+            track.Advance(2f);
+            Assert.That(track.CurrentTime, Is.EqualTo(10f));
+            Assert.That(track.IsFinished, Is.True);
+        }
+
+        private static AnimationTrack PoseTrack(int priority, Vector3? position, Vector3? rotation)
+        {
+            var track = MakeTrack(loop: true);
+            track.Data!.joints = new[] { new binBVHJoint {
+                Name = "mNeck", Priority = priority,
+                positionkeys = position.HasValue
+                    ? new[] { new binBVHJointKey { time = 0, key_element = position.Value } }
+                    : System.Array.Empty<binBVHJointKey>(),
+                rotationkeys = rotation.HasValue
+                    ? new[] { new binBVHJointKey { time = 0, key_element = rotation.Value } }
+                    : System.Array.Empty<binBVHJointKey>(),
+            }};
+            return track;
+        }
 
         /// <summary>
         /// Builds a minimal valid BVH binary blob with no joints, so we can construct a
