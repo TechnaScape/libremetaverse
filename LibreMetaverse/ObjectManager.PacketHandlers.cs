@@ -380,9 +380,10 @@ namespace LibreMetaverse
                         var handler = m_ObjectUpdate;
                         if (handler != null)
                         {
-                            // Ensure event handlers get the computed world position when necessary
-                            ThreadPool.QueueUserWorkItem(delegate (object? o)
-                            { handler(this, new PrimEventArgs(simulator, prim, update.RegionData.TimeDilation, isNewObject, attachment)); });
+                            // Subscribers copy this shared mutable primitive. Finish the copy
+                            // before another packet changes it or removes it from the store.
+                            handler(this, new PrimEventArgs(simulator, prim,
+                                update.RegionData.TimeDilation, isNewObject, attachment));
                         }
                         //OnParticleUpdate handler replacing decode particles, PCode.Particle system appears to be deprecated this is a fix
                         if (prim.ParticleSys.PartMaxAge != 0)
@@ -625,8 +626,8 @@ namespace LibreMetaverse
                     var handler = m_TerseObjectUpdate;
                     if (handler != null)
                     {
-                        ThreadPool.QueueUserWorkItem(delegate (object? o)
-                        { handler(this, new TerseObjectUpdateEventArgs(simulator, obj!, update, terse.RegionData.TimeDilation)); });
+                        handler(this, new TerseObjectUpdateEventArgs(simulator, obj!, update,
+                            terse.RegionData.TimeDilation));
                     }
 
                     #region Update Client.Self

@@ -397,7 +397,9 @@ namespace LibreMetaverse
             RegisterCallback(PacketType.CompletePingCheck, CompletePingCheckHandler, false);
             RegisterCallback(PacketType.SimStats, SimStatsHandler, false);
             RegisterCallback(PacketType.GenericMessage, GenericMessageHandler);
-            RegisterCallback(PacketType.GenericStreamingMessage, GenericStreamingMessageHandler);
+            // PBR overrides mutate the same tracked primitives as full updates and kills.
+            // Decode and publish them inline so a later object packet cannot overtake an edit.
+            RegisterCallback(PacketType.GenericStreamingMessage, GenericStreamingMessageHandler, false);
         }
 
         private void GenericMessageHandler(object? sender, PacketReceivedEventArgs e)
@@ -1684,4 +1686,3 @@ namespace LibreMetaverse
 
     #endregion
 }
-

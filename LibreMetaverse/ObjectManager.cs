@@ -642,13 +642,14 @@ namespace LibreMetaverse
 
             Client.Network.RegisterCallback(PacketType.ObjectUpdate, ObjectUpdateHandler, false);
             Client.Network.RegisterCallback(PacketType.ImprovedTerseObjectUpdate, ImprovedTerseObjectUpdateHandler, false);
-            Client.Network.RegisterCallback(PacketType.ObjectUpdateCompressed, ObjectUpdateCompressedHandler);
-            Client.Network.RegisterCallback(PacketType.ObjectUpdateCached, ObjectUpdateCachedHandler);
-            Client.Network.RegisterCallback(PacketType.KillObject, KillObjectHandler);
+            // All updates to the shared primitive store must retain packet-pump order.
+            Client.Network.RegisterCallback(PacketType.ObjectUpdateCompressed, ObjectUpdateCompressedHandler, false);
+            Client.Network.RegisterCallback(PacketType.ObjectUpdateCached, ObjectUpdateCachedHandler, false);
+            Client.Network.RegisterCallback(PacketType.KillObject, KillObjectHandler, false);
             Client.Network.RegisterCallback(PacketType.ObjectPropertiesFamily, ObjectPropertiesFamilyHandler);
             Client.Network.RegisterCallback(PacketType.ObjectProperties, ObjectPropertiesHandler);
             Client.Network.RegisterCallback(PacketType.PayPriceReply, PayPriceReplyHandler);
-            Client.Network.RegisterCallback(PacketType.ObjectAnimation, ObjectAnimationHandler);
+            Client.Network.RegisterCallback(PacketType.ObjectAnimation, ObjectAnimationHandler, false);
             Client.Network.RegisterEventCallback("ObjectPhysicsProperties", ObjectPhysicsPropertiesHandler);
             Client.Network.GenericStreamingMessage += GenericStreamingMessageHandler;
         }
@@ -2881,4 +2882,3 @@ namespace LibreMetaverse
         }
     }
 }
-

@@ -592,7 +592,7 @@ namespace LibreMetaverse
             Client = client ?? throw new ArgumentNullException(nameof(client));
 
             // Avatar appearance callback
-            Client.Network.RegisterCallback(PacketType.AvatarAppearance, AvatarAppearanceHandler);
+            Client.Network.RegisterCallback(PacketType.AvatarAppearance, AvatarAppearanceHandler, false);
 
             // Avatar profile callbacks
             Client.Network.RegisterCallback(PacketType.AvatarPropertiesReply, AvatarPropertiesHandler);
@@ -2072,4 +2072,3 @@ namespace LibreMetaverse
     }
     #endregion
 }
-
