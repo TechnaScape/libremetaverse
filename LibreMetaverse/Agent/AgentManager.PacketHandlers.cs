@@ -945,33 +945,45 @@ namespace LibreMetaverse
         }
 
         /// <summary>
-        /// Moves the agent into the region a TeleportFinish names -- once that region has answered. [SLUnity]
+        /// Moves the agent into the region a TeleportFinish names. [SLUnity]
         /// </summary>
         /// <remarks>
-        /// Connecting with setDefault made the destination the current simulator inside the call that
-        /// blocks for its handshake, so a destination that never answered took the agent with it:
-        /// every AgentUpdate and request after that went to a region with no circuit, and a viewer sat
-        /// on its teleport until the resident logged out. The reference moves the agent only when the
-        /// destination answers (process_agent_movement_complete; the setRegion in
-        /// process_teleport_finish is commented out). So the circuit is opened first and made current
-        /// only if it answered -- the region crossing's two steps -- and otherwise the region we left
-        /// stays current, which is the only one this viewer still has a circuit to.
+        /// <para>In one step, as the reference does it: UseCircuitCode and CompleteAgentMovement go out
+        /// together (process_teleport_finish), and the region becomes current only once it has
+        /// answered -- NetworkManager.Connect switches after Simulator.ConnectAsync returns true, which
+        /// now means a RegionHandshake arrived. A teleport's destination does not answer until
+        /// CompleteAgentMovement arrives, so connecting first and moving in second -- right for a
+        /// region crossing, whose region is already a child -- waited for an answer that was never
+        /// coming, and failed every teleport into a region the viewer was not already connected
+        /// to.</para>
+        ///
+        /// <para>If the destination does not answer, the region left behind stays current. That is all
+        /// a viewer can do: the grid has already handed the agent over, and whether it is taken back
+        /// is the source simulator's decision.</para>
         /// </remarks>
         private void ArriveAfterTeleport(IPEndPoint endPoint, ulong handle, Uri? seedcaps, uint sizeX, uint sizeY)
         {
             NetworkManager? network = Client?.Network;
-            Simulator? departing = network?.CurrentSim;
+
+            // A client that has logged out has nowhere to arrive: connecting would restart its network
+            // processors for a session the grid has already closed. A TeleportFinish can still be
+            // delivered after the logout of the session that asked for it.
+            if (network == null || !network.Connected)
+            {
+                TeleportMessage = "The teleport finished after the session had ended";
+                teleportStatus = TeleportStatus.Failed;
+                Logger.Info(TeleportMessage, Client);
+                return;
+            }
+
+            Simulator? departing = network.CurrentSim;
             bool wasComplete = departing?.AgentMovementComplete ?? false;
             if (departing != null)
             {
                 departing.AgentMovementComplete = false; // we're not there anymore
             }
 
-            Simulator? arrived = network?.Connect(endPoint, handle, false, seedcaps, sizeX, sizeY);
-            if (arrived != null)
-            {
-                arrived = network?.Connect(endPoint, handle, true, seedcaps, sizeX, sizeY);
-            }
+            Simulator? arrived = network.Connect(endPoint, handle, true, seedcaps, sizeX, sizeY);
 
             if (arrived != null)
             {
