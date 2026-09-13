@@ -386,7 +386,17 @@ namespace LibreMetaverse.Rendering
         public FacetedMesh? GenerateFacetedMeshMesh(Primitive prim, byte[] meshData, DetailLevel lod)
         {
             if (meshData == null || meshData.Length == 0) return null;
-            var asset = new AssetMesh(UUID.Zero, meshData);
+            return GenerateFacetedMeshMesh(prim, new AssetMesh(UUID.Zero, meshData), lod);
+        }
+
+        /// <summary>
+        /// Decodes an already constructed mesh asset -- one reading from a stream, for instance --
+        /// into a <see cref="FacetedMesh"/> at the requested LOD, falling back to another level when
+        /// that one is missing.
+        /// </summary>
+        public FacetedMesh? GenerateFacetedMeshMesh(Primitive prim, AssetMesh asset, DetailLevel lod)
+        {
+            if (asset == null) return null;
             if (FacetedMesh.TryDecodeFromAsset(prim, asset, lod, out var mesh))
                 return mesh;
             DetailLevel? fallback = FindFallbackLod(asset, lod);

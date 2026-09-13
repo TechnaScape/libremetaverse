@@ -56,6 +56,30 @@ namespace LibreMetaverse.Assets
         }
 
         /// <summary>
+        /// Initializes a mesh asset that reads its header and sections from a seekable stream,
+        /// starting at the stream's current position, instead of from <see cref="Asset.AssetData"/>.
+        /// </summary>
+        /// <remarks>
+        /// A level of detail is one section of an asset that also carries three other levels, two
+        /// physics shapes and a skin. Reading the whole asset into memory to inflate one of them is
+        /// most of the allocation of a decode when the level asked for is a small one. Only the
+        /// header and the sections asked for are read. The stream must stay open for as long as
+        /// sections are decoded, and is not disposed by this asset.
+        /// </remarks>
+        public AssetMesh(UUID assetID, Stream source)
+        {
+            AssetID = assetID;
+            _source = source ?? throw new ArgumentNullException(nameof(source));
+            _origin = source.Position;
+        }
+
+        private readonly Stream? _source;
+        private readonly long _origin;
+
+        /// <summary>Bytes read from the source stream or copied out of the asset data so far.</summary>
+        public long BytesRead { get; private set; }
+
+        /// <summary>
         /// TODO: Encodes Collada file into LLMesh format
         /// </summary>
         public sealed override void Encode() { }
@@ -104,10 +128,13 @@ namespace LibreMetaverse.Assets
 
             try
             {
-                using (MemoryStream data = new MemoryStream(AssetData, false))
+                Stream data = _source ?? new MemoryStream(AssetData, false);
+                try
                 {
+                    if (_source != null) _source.Position = _origin;
                     OSDMap header = (OSDMap)OSDParser.DeserializeLLSDBinary(data);
-                    _bodyStart = data.Position;
+                    _bodyStart = data.Position - (_source != null ? _origin : 0);
+                    BytesRead += _bodyStart;
 
                     MeshData = new OSDMap();
                     MeshData["asset_header"] = header;
@@ -118,6 +145,10 @@ namespace LibreMetaverse.Assets
 
                     _decodedParts.Clear();
                     _header = header;
+                }
+                finally
+                {
+                    if (_source == null) data.Dispose();
                 }
                 return true;
             }
@@ -151,8 +182,8 @@ namespace LibreMetaverse.Assets
 
             try
             {
-                byte[] part = new byte[partInfo["size"]];
-                Buffer.BlockCopy(AssetData, partInfo["offset"] + (int)_bodyStart, part, 0, part.Length);
+                byte[]? part = ReadSection(partInfo);
+                if (part == null) return null;
                 OSD decoded = Helpers.DecompressOSD(part);
                 MeshData[partName] = decoded;
                 return decoded;
@@ -162,6 +193,56 @@ namespace LibreMetaverse.Assets
                 Logger.Error("Failed to decode mesh asset section " + partName, ex);
                 return null;
             }
+        }
+
+        /// <summary>
+        /// The raw, still-compressed bytes of one named section, or null when the asset has no such
+        /// section or it lies outside the asset.
+        /// </summary>
+        public byte[]? ReadPartBytes(string partName)
+        {
+            if (partName == null || !DecodeHeader()) return null;
+            if (!_header!.TryGetValue(partName, out OSD entry) || entry.Type != OSDType.Map) return null;
+            try
+            {
+                return ReadSection((OSDMap)entry);
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        private byte[]? ReadSection(OSDMap partInfo)
+        {
+            if (!partInfo.ContainsKey("offset") || !partInfo.ContainsKey("size")) return null;
+            long offset = partInfo["offset"].AsInteger();
+            int size = partInfo["size"].AsInteger();
+            if (offset < 0 || size <= 0) return null;
+
+            long start = _bodyStart + offset;
+            byte[] part = new byte[size];
+
+            if (_source == null)
+            {
+                if (start + size > AssetData.LongLength) return null;
+                Buffer.BlockCopy(AssetData, (int)start, part, 0, size);
+            }
+            else
+            {
+                if (_origin + start + size > _source.Length) return null;
+                _source.Position = _origin + start;
+                int read = 0;
+                while (read < size)
+                {
+                    int n = _source.Read(part, read, size - read);
+                    if (n <= 0) return null;
+                    read += n;
+                }
+            }
+
+            BytesRead += size;
+            return part;
         }
     }
 }
