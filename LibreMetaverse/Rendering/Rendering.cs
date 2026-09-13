@@ -345,12 +345,12 @@ namespace LibreMetaverse.Rendering
 
             try
             {
-                if (!meshAsset.Decode())
+                // The header, the skin and the one level asked for -- never the other three levels
+                // and the physics shapes, which a renderer does not read.
+                if (!meshAsset.DecodeHeader())
                 {
                     return false;
                 }
-
-                OSDMap MeshData = meshAsset.MeshData;
 
                 mesh = new FacetedMesh
                 {
@@ -361,7 +361,7 @@ namespace LibreMetaverse.Rendering
                 };
 
                 // Parse skin section for rigged / fitted mesh support.
-                if (MeshData.TryGetValue("skin", out var skinOsd) && skinOsd is OSDMap skinMap)
+                if (meshAsset.DecodePart("skin") is OSDMap skinMap)
                 {
                     mesh.SkinData = DecodeSkinData(skinMap);
                 }
@@ -372,19 +372,19 @@ namespace LibreMetaverse.Rendering
                 {
                     default:
                     case DetailLevel.Highest:
-                        facesOSD = MeshData["high_lod"];
+                        facesOSD = meshAsset.DecodePart("high_lod");
                         break;
 
                     case DetailLevel.High:
-                        facesOSD = MeshData["medium_lod"];
+                        facesOSD = meshAsset.DecodePart("medium_lod");
                         break;
 
                     case DetailLevel.Medium:
-                        facesOSD = MeshData["low_lod"];
+                        facesOSD = meshAsset.DecodePart("low_lod");
                         break;
 
                     case DetailLevel.Low:
-                        facesOSD = MeshData["lowest_lod"];
+                        facesOSD = meshAsset.DecodePart("lowest_lod");
                         break;
                 }
 

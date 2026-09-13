@@ -369,7 +369,7 @@ namespace LibreMetaverse.Rendering
             var asset = new AssetMesh(UUID.Zero, meshData);
             if (FacetedMesh.TryDecodeFromAsset(prim, asset, DetailLevel.Highest, out var mesh))
                 return mesh;
-            DetailLevel? fallback = FindFallbackLod(asset.MeshData, DetailLevel.Highest);
+            DetailLevel? fallback = FindFallbackLod(asset, DetailLevel.Highest);
             return fallback.HasValue && FacetedMesh.TryDecodeFromAsset(prim, asset, fallback.Value, out mesh)
                 ? mesh : null;
         }
@@ -389,7 +389,7 @@ namespace LibreMetaverse.Rendering
             var asset = new AssetMesh(UUID.Zero, meshData);
             if (FacetedMesh.TryDecodeFromAsset(prim, asset, lod, out var mesh))
                 return mesh;
-            DetailLevel? fallback = FindFallbackLod(asset.MeshData, lod);
+            DetailLevel? fallback = FindFallbackLod(asset, lod);
             return fallback.HasValue && FacetedMesh.TryDecodeFromAsset(prim, asset, fallback.Value, out mesh)
                 ? mesh : null;
         }
@@ -823,15 +823,16 @@ namespace LibreMetaverse.Rendering
         /// <paramref name="requested"/>, ordered from highest to lowest visual quality.
         /// Returns <c>null</c> if the asset header was never decoded or no alternative exists.
         /// </summary>
-        private static DetailLevel? FindFallbackLod(OSDMap meshData, DetailLevel requested)
+        private static DetailLevel? FindFallbackLod(AssetMesh asset, DetailLevel requested)
         {
-            if (!meshData.ContainsKey("asset_header")) return null;
+            if (!asset.DecodeHeader()) return null;
             var preference = new[] { DetailLevel.Highest, DetailLevel.High, DetailLevel.Medium, DetailLevel.Low };
             foreach (var candidate in preference)
             {
                 if (candidate == requested) continue;
-                string key = LodKey(candidate);
-                if (meshData.ContainsKey(key) && meshData[key] is OSDArray arr && arr.Count > 0)
+                // Decoded only while looking, and the first usable level ends the search: the
+                // fallback exists for a broken or missing level, which is rare.
+                if (asset.DecodePart(LodKey(candidate)) is OSDArray arr && arr.Count > 0)
                     return candidate;
             }
             return null;

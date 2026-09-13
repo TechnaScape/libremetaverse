@@ -25,6 +25,7 @@
  */
 
 using System;
+using System.Collections.Generic;
 using System.IO;
 using LibreMetaverse.StructuredData;
 
@@ -65,35 +66,13 @@ namespace LibreMetaverse.Assets
         /// <returns>true</returns>
         public sealed override bool Decode()
         {
+            if (!DecodeHeader()) return false;
+
             try
             {
-                MeshData = new OSDMap();
-
-                using (MemoryStream data = new MemoryStream(AssetData))
+                foreach (string partName in _header!.Keys)
                 {
-                    OSDMap header = (OSDMap)OSDParser.DeserializeLLSDBinary(data);
-                    MeshData["asset_header"] = header;
-                    long start = data.Position;
-
-                    foreach(string partName in header.Keys)
-                    {
-                        if (header[partName].Type != OSDType.Map)
-                        {
-                            MeshData[partName] = header[partName];
-                            continue;
-                        }
-
-                        OSDMap partInfo = (OSDMap)header[partName];
-                        if (partInfo["offset"] < 0 || partInfo["size"] == 0)
-                        {
-                            MeshData[partName] = partInfo;
-                            continue;
-                        }
-
-                        byte[] part = new byte[partInfo["size"]];
-                        Buffer.BlockCopy(AssetData, partInfo["offset"] + (int)start, part, 0, part.Length);
-                        MeshData[partName] = Helpers.DecompressOSD(part);
-                    }
+                    DecodePart(partName);
                 }
                 return true;
             }
@@ -101,6 +80,87 @@ namespace LibreMetaverse.Assets
             {
                 Logger.Error("Failed to decode mesh asset", ex);
                 return false;
+            }
+        }
+
+        private OSDMap? _header;
+        private long _bodyStart;
+        private readonly HashSet<string> _decodedParts = new HashSet<string>();
+
+        /// <summary>
+        /// Reads the asset header only, leaving every compressed section where it is.
+        /// </summary>
+        /// <remarks>
+        /// A mesh asset carries four levels of detail, two physics shapes and a skin, each a zlib
+        /// stream of LLSD. <see cref="Decode"/> inflates and parses all of them, which is what a
+        /// renderer asking for one level used to pay on every request -- several times the
+        /// allocation and time of the level it wanted. Until a section is asked for through
+        /// <see cref="DecodePart"/>, <see cref="MeshData"/> holds the header's own entry for it.
+        /// </remarks>
+        /// <returns>False when the header cannot be read.</returns>
+        public bool DecodeHeader()
+        {
+            if (_header != null) return true;
+
+            try
+            {
+                using (MemoryStream data = new MemoryStream(AssetData, false))
+                {
+                    OSDMap header = (OSDMap)OSDParser.DeserializeLLSDBinary(data);
+                    _bodyStart = data.Position;
+
+                    MeshData = new OSDMap();
+                    MeshData["asset_header"] = header;
+                    foreach (string partName in header.Keys)
+                    {
+                        MeshData[partName] = header[partName];
+                    }
+
+                    _decodedParts.Clear();
+                    _header = header;
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Failed to decode mesh asset header", ex);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Inflates one named section (<c>high_lod</c>, <c>skin</c>, ...) on first use and returns it.
+        /// </summary>
+        /// <returns>
+        /// The decoded section; the header's value for an entry that is not a section; or null when
+        /// the asset has no such entry, the section is empty, or it will not decode.
+        /// </returns>
+        public OSD? DecodePart(string partName)
+        {
+            if (partName == null || !DecodeHeader()) return null;
+            if (!_header!.TryGetValue(partName, out OSD entry)) return null;
+            if (entry.Type != OSDType.Map) return entry;
+            if (_decodedParts.Contains(partName)) return MeshData[partName];
+
+            OSDMap partInfo = (OSDMap)entry;
+            _decodedParts.Add(partName);
+            if (partInfo["offset"] < 0 || partInfo["size"] == 0)
+            {
+                return null;
+            }
+
+            try
+            {
+                byte[] part = new byte[partInfo["size"]];
+                Buffer.BlockCopy(AssetData, partInfo["offset"] + (int)_bodyStart, part, 0, part.Length);
+                OSD decoded = Helpers.DecompressOSD(part);
+                MeshData[partName] = decoded;
+                return decoded;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Failed to decode mesh asset section " + partName, ex);
+                return null;
             }
         }
     }
