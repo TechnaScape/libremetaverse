@@ -910,9 +910,9 @@ namespace LibreMetaverse
         /// results will be returned, or how many times the callback will be 
         /// fired other than you won't get more than 100 total parcels from 
         /// each query.</remarks>
-        public void StartLandSearch(SearchTypeFlags typeFlags)
+        public UUID StartLandSearch(SearchTypeFlags typeFlags)
         {
-            StartLandSearch(DirFindFlags.SortAsc | DirFindFlags.PerMeterSort, typeFlags, 0, 0, 0);
+            return StartLandSearch(DirFindFlags.SortAsc | DirFindFlags.PerMeterSort, typeFlags, 0, 0, 0);
         }
 
         /// <summary>
@@ -932,9 +932,9 @@ namespace LibreMetaverse
         /// results will be returned, or how many times the callback will be 
         /// fired other than you won't get more than 100 total parcels from 
         /// each query.</remarks>
-        public void StartLandSearch(SearchTypeFlags typeFlags, int priceLimit, int areaLimit, int queryStart)
+        public UUID StartLandSearch(SearchTypeFlags typeFlags, int priceLimit, int areaLimit, int queryStart)
         {
-            StartLandSearch(DirFindFlags.SortAsc | DirFindFlags.PerMeterSort | DirFindFlags.LimitByPrice |
+            return StartLandSearch(DirFindFlags.SortAsc | DirFindFlags.PerMeterSort | DirFindFlags.LimitByPrice |
                 DirFindFlags.LimitByArea, typeFlags, priceLimit, areaLimit, queryStart);
         }
 
@@ -983,7 +983,8 @@ namespace LibreMetaverse
         /// // request all mainland, any maturity rating that is larger than 512 sq.m
         /// StartLandSearch(DirFindFlags.SortAsc | DirFindFlags.PerMeterSort | DirFindFlags.LimitByArea | DirFindFlags.IncludePG | DirFindFlags.IncludeMature | DirFindFlags.IncludeAdult, SearchTypeFlags.Mainland, 0, 512, 0);
         /// </code></example>
-        public void StartLandSearch(DirFindFlags findFlags, SearchTypeFlags typeFlags, int priceLimit,
+        /// <returns>A UUID to correlate the results when the <see cref="OnDirLandReply"/> event is raised</returns>
+        public UUID StartLandSearch(DirFindFlags findFlags, SearchTypeFlags typeFlags, int priceLimit,
             int areaLimit, int queryStart)
         {
             DirLandQueryPacket query = new DirLandQueryPacket
@@ -1004,7 +1005,8 @@ namespace LibreMetaverse
                 }
             };
 
-            Client.Network.SendPacket(query);            
+            Client.Network.SendPacket(query);
+            return query.QueryData.QueryID;
         }
        
         /// <summary>
@@ -1250,7 +1252,7 @@ namespace LibreMetaverse
                     classifieds.Add(classified);
                 }
 
-                OnDirClassifieds(new DirClassifiedsReplyEventArgs(classifieds));                
+                OnDirClassifieds(new DirClassifiedsReplyEventArgs(reply.QueryData.QueryID, classifieds));                
             }
         }
 
@@ -1278,7 +1280,7 @@ namespace LibreMetaverse
 
                     parcelsForSale.Add(dirParcel);
                 }
-                OnDirLand(new DirLandReplyEventArgs(parcelsForSale));                
+                OnDirLand(new DirLandReplyEventArgs(reply.QueryData.QueryID, parcelsForSale));
             }
         }
 
@@ -1309,7 +1311,7 @@ namespace LibreMetaverse
                     parcelsForSale.Add(dirParcel);
                 }
 
-                OnDirLand(new DirLandReplyEventArgs(parcelsForSale));
+                OnDirLand(new DirLandReplyEventArgs(reply.QueryID, parcelsForSale));
             }
         }
 
@@ -1594,13 +1596,25 @@ namespace LibreMetaverse
     /// <summary>Contains the classified data returned from the data server</summary>
     public class DirClassifiedsReplyEventArgs : EventArgs
     {
+        /// <summary>The ID returned by <see cref="DirectoryManager.StartClassifiedSearch"/></summary>
+        public UUID QueryID { get; }
+
         /// <summary>A list containing Classified Ads returned by the data server</summary>
         public List<DirectoryManager.Classified> Classifieds { get; }
 
         /// <summary>Construct a new instance of the DirClassifiedsReplyEventArgs class</summary>
         /// <param name="classifieds">A list of classified ad data returned from the data server</param>
         public DirClassifiedsReplyEventArgs(List<DirectoryManager.Classified> classifieds)
+            : this(UUID.Zero, classifieds)
         {
+        }
+
+        /// <summary>Construct a new instance of the DirClassifiedsReplyEventArgs class</summary>
+        /// <param name="queryID">The ID of the query the data server is answering</param>
+        /// <param name="classifieds">A list of classified ad data returned from the data server</param>
+        public DirClassifiedsReplyEventArgs(UUID queryID, List<DirectoryManager.Classified> classifieds)
+        {
+            this.QueryID = queryID;
             this.Classifieds = classifieds;
         }
     }
@@ -1648,13 +1662,25 @@ namespace LibreMetaverse
     /// <summary>Contains the land sales data returned from the data server</summary>
     public class DirLandReplyEventArgs : EventArgs
     {
+        /// <summary>The ID returned by <see cref="DirectoryManager.StartLandSearch"/></summary>
+        public UUID QueryID { get; }
+
         /// <summary>A list containing land forsale data returned by the data server</summary>
         public List<DirectoryManager.DirectoryParcel> DirParcels { get; }
 
         /// <summary>Construct a new instance of the DirLandReplyEventArgs class</summary>
         /// <param name="dirParcels">A list of parcels for sale returned by the data server</param>
         public DirLandReplyEventArgs(List<DirectoryManager.DirectoryParcel> dirParcels)
+            : this(UUID.Zero, dirParcels)
         {
+        }
+
+        /// <summary>Construct a new instance of the DirLandReplyEventArgs class</summary>
+        /// <param name="queryID">The ID of the query the data server is answering</param>
+        /// <param name="dirParcels">A list of parcels for sale returned by the data server</param>
+        public DirLandReplyEventArgs(UUID queryID, List<DirectoryManager.DirectoryParcel> dirParcels)
+        {
+            this.QueryID = queryID;
             this.DirParcels = dirParcels;
         }
     }
