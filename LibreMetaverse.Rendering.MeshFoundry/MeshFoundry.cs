@@ -819,9 +819,9 @@ namespace LibreMetaverse.Rendering
         }
 
         /// <summary>
-        /// Returns the first LOD available in <paramref name="meshData"/> that differs from
+        /// Returns the first LOD available in <paramref name="asset"/> that differs from
         /// <paramref name="requested"/>, ordered from highest to lowest visual quality.
-        /// Returns <c>null</c> if the asset header was never decoded or no alternative exists.
+        /// Returns <c>null</c> if the asset header will not decode or no alternative exists.
         /// </summary>
         private static DetailLevel? FindFallbackLod(AssetMesh asset, DetailLevel requested)
         {
