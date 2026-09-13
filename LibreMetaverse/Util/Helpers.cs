@@ -679,17 +679,23 @@ namespace LibreMetaverse
         /// </summary>
         /// <param name="meshBytes"></param>
         /// <returns>the OSD object</returns>
-        public static OSD DecompressOSD(byte[] meshBytes) {
+        public static OSD DecompressOSD(byte[] meshBytes) => DecompressOSD(meshBytes, 0, meshBytes.Length);
+
+        /// <summary>
+        /// Inflates and parses <paramref name="count"/> bytes of zlib-wrapped binary LLSD starting at
+        /// <paramref name="offset"/>, so a caller may pass a buffer it reuses.
+        /// </summary>
+        public static OSD DecompressOSD(byte[] meshBytes, int offset, int count) {
             // The inflated bytes are read once by the parser, which copies every binary and string
             // value it keeps, so they need not outlive this call. Inflating into a buffer kept per
             // thread, rather than a MemoryStream growing by doubling, stops a mesh decode leaving
             // two or three times its inflated size behind as garbage -- measured as most of what a
             // mesh level cost to decode.
-            int skip = Math.Min(2, meshBytes.Length); // skip the two-byte zlib header
-            byte[] buffer = InflateBuffer(meshBytes.Length * 4);
+            int skip = Math.Min(2, count); // skip the two-byte zlib header
+            byte[] buffer = InflateBuffer(count * 4);
             int length = 0;
 
-            using (MemoryStream inMs = new MemoryStream(meshBytes, skip, meshBytes.Length - skip, false))
+            using (MemoryStream inMs = new MemoryStream(meshBytes, offset + skip, count - skip, false))
             using (DeflateStream decompressionStream = new DeflateStream(inMs, CompressionMode.Decompress))
             {
                 int readLen;

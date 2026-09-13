@@ -182,9 +182,12 @@ namespace LibreMetaverse.Assets
 
             try
             {
-                byte[]? part = ReadSection(partInfo);
+                // Read into this thread's section buffer: the compressed bytes are needed only
+                // for as long as the inflate takes, and a new array per section was a third of
+                // what decoding a level left behind.
+                byte[]? part = ReadSection(partInfo, reuse: true, out int length);
                 if (part == null) return null;
-                OSD decoded = Helpers.DecompressOSD(part);
+                OSD decoded = Helpers.DecompressOSD(part, 0, length);
                 MeshData[partName] = decoded;
                 return decoded;
             }
@@ -205,7 +208,7 @@ namespace LibreMetaverse.Assets
             if (!_header!.TryGetValue(partName, out OSD entry) || entry.Type != OSDType.Map) return null;
             try
             {
-                return ReadSection((OSDMap)entry);
+                return ReadSection((OSDMap)entry, reuse: false, out _);
             }
             catch (Exception)
             {
@@ -213,15 +216,33 @@ namespace LibreMetaverse.Assets
             }
         }
 
-        private byte[]? ReadSection(OSDMap partInfo)
+        [ThreadStatic] private static byte[]? _sectionBuffer;
+
+        private byte[]? ReadSection(OSDMap partInfo, bool reuse, out int size)
         {
+            size = 0;
             if (!partInfo.ContainsKey("offset") || !partInfo.ContainsKey("size")) return null;
             long offset = partInfo["offset"].AsInteger();
-            int size = partInfo["size"].AsInteger();
+            size = partInfo["size"].AsInteger();
             if (offset < 0 || size <= 0) return null;
 
             long start = _bodyStart + offset;
-            byte[] part = new byte[size];
+            byte[] part;
+            if (reuse)
+            {
+                part = _sectionBuffer ?? Array.Empty<byte>();
+                if (part.Length < size)
+                {
+                    int grown = 1 << 16;
+                    while (grown < size && grown < (1 << 30)) grown <<= 1;
+                    part = new byte[grown];
+                    _sectionBuffer = part;
+                }
+            }
+            else
+            {
+                part = new byte[size];
+            }
 
             if (_source == null)
             {
