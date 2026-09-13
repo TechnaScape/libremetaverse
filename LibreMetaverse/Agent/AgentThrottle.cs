@@ -35,13 +35,28 @@ namespace LibreMetaverse
     /// </summary>
     public class AgentThrottle
     {
+        // Ceilings per channel, in bits per second: what the Second Life viewer sends at its own
+        // maximum of 6,000 kbps (llviewerthrottle.cpp, extrapolated past its 1,000 kbps preset).
+        // They were 150,000 / 170,000 / 34,000 / 34,000 / 1,338,000 / 446,000 / 220,000, and the
+        // object channel's ceiling sat below what the reference sends at its DEFAULT 3,000 kbps
+        // (1,528 kbps), so no bandwidth setting could load a region faster than it. Task also
+        // allows the texture and asset shares of that maximum, which a viewer fetching both over
+        // HTTP may move to objects; the simulator applies its own limits either way.
+        public const float MaxResend = 614400f;
+        public const float MaxLand = 409600f;
+        public const float MaxWind = 81920f;
+        public const float MaxCloud = 81920f;
+        public const float MaxTask = 2099200f + 2099200f + 757760f;
+        public const float MaxTexture = 2099200f;
+        public const float MaxAsset = 757760f;
+
         /// <summary>Maximum bits per second for resending unacknowledged packets</summary>
         public float Resend
         {
             get => resend;
             set
             {
-                if (value > 150000.0f) resend = 150000.0f;
+                if (value > MaxResend) resend = MaxResend;
                 else if (value < 10000.0f) resend = 10000.0f;
                 else resend = value;
             }
@@ -52,7 +67,7 @@ namespace LibreMetaverse
             get => land;
             set
             {
-                if (value > 170000.0f) land = 170000.0f;
+                if (value > MaxLand) land = MaxLand;
                 else if (value < 0.0f) land = 0.0f; // We don't have control of these so allow throttling to 0
                 else land = value;
             }
@@ -63,7 +78,7 @@ namespace LibreMetaverse
             get => wind;
             set
             {
-                if (value > 34000.0f) wind = 34000.0f;
+                if (value > MaxWind) wind = MaxWind;
                 else if (value < 0.0f) wind = 0.0f; // We don't have control of these so allow throttling to 0
                 else wind = value;
             }
@@ -74,7 +89,7 @@ namespace LibreMetaverse
             get => cloud;
             set
             {
-                if (value > 34000.0f) cloud = 34000.0f;
+                if (value > MaxCloud) cloud = MaxCloud;
                 else if (value < 0.0f) cloud = 0.0f; // We don't have control of these so allow throttling to 0
                 else cloud = value;
             }
@@ -85,7 +100,7 @@ namespace LibreMetaverse
             get => task;
             set
             {
-                if (value > 446000.0f*3) task = 446000.0f*3;
+                if (value > MaxTask) task = MaxTask;
                 else if (value < 4000.0f) task = 4000.0f;
                 else task = value;
             }
@@ -96,7 +111,7 @@ namespace LibreMetaverse
             get => texture;
             set
             {
-                if (value > 446000.0f) texture = 446000.0f;
+                if (value > MaxTexture) texture = MaxTexture;
                 else if (value < 4000.0f) texture = 4000.0f;
                 else texture = value;
             }
@@ -107,7 +122,7 @@ namespace LibreMetaverse
             get => asset;
             set
             {
-                if (value > 220000.0f) asset = 220000.0f;
+                if (value > MaxAsset) asset = MaxAsset;
                 else if (value < 10000.0f) asset = 10000.0f;
                 else asset = value;
             }
