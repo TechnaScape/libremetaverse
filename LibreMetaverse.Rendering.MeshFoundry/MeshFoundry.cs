@@ -395,12 +395,20 @@ namespace LibreMetaverse.Rendering
         /// that one is missing.
         /// </summary>
         public FacetedMesh? GenerateFacetedMeshMesh(Primitive prim, AssetMesh asset, DetailLevel lod)
+            => GenerateFacetedMeshMesh(prim, asset, lod, null);
+
+        /// <summary>
+        /// As <see cref="GenerateFacetedMeshMesh(Primitive, AssetMesh, DetailLevel)"/>, reusing a skin
+        /// the caller decoded from another level of the same asset.
+        /// </summary>
+        public FacetedMesh? GenerateFacetedMeshMesh(Primitive prim, AssetMesh asset, DetailLevel lod,
+            MeshSkinData? knownSkin)
         {
             if (asset == null) return null;
-            if (FacetedMesh.TryDecodeFromAsset(prim, asset, lod, out var mesh))
+            if (FacetedMesh.TryDecodeFromAsset(prim, asset, lod, out var mesh, knownSkin))
                 return mesh;
             DetailLevel? fallback = FindFallbackLod(asset, lod);
-            return fallback.HasValue && FacetedMesh.TryDecodeFromAsset(prim, asset, fallback.Value, out mesh)
+            return fallback.HasValue && FacetedMesh.TryDecodeFromAsset(prim, asset, fallback.Value, out mesh, knownSkin)
                 ? mesh : null;
         }
 

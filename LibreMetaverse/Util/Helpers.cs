@@ -680,28 +680,54 @@ namespace LibreMetaverse
         /// <param name="meshBytes"></param>
         /// <returns>the OSD object</returns>
         public static OSD DecompressOSD(byte[] meshBytes) {
-            OSD? decodedOsd = null;
+            // The inflated bytes are read once by the parser, which copies every binary and string
+            // value it keeps, so they need not outlive this call. Inflating into a buffer kept per
+            // thread, rather than a MemoryStream growing by doubling, stops a mesh decode leaving
+            // two or three times its inflated size behind as garbage -- measured as most of what a
+            // mesh level cost to decode.
+            int skip = Math.Min(2, meshBytes.Length); // skip the two-byte zlib header
+            byte[] buffer = InflateBuffer(meshBytes.Length * 4);
+            int length = 0;
 
-            using (MemoryStream inMs = new MemoryStream(meshBytes))
-            using (MemoryStream outMs = new MemoryStream())
+            using (MemoryStream inMs = new MemoryStream(meshBytes, skip, meshBytes.Length - skip, false))
             using (DeflateStream decompressionStream = new DeflateStream(inMs, CompressionMode.Decompress))
             {
-                byte[] readBuffer = new byte[2048];
-                inMs.Read(readBuffer, 0, 2); // skip first 2 bytes in header
-                int readLen = 0;
-
-                while ((readLen = decompressionStream.Read(readBuffer, 0, readBuffer.Length)) > 0)
-                    outMs.Write(readBuffer, 0, readLen);
-
-                outMs.Flush();
-
-                outMs.Seek(0, SeekOrigin.Begin);
-
-                byte[] decompressedBuf = outMs.GetBuffer();
-
-                decodedOsd = OSDParser.DeserializeLLSDBinary(decompressedBuf);
+                int readLen;
+                while ((readLen = decompressionStream.Read(buffer, length, buffer.Length - length)) > 0)
+                {
+                    length += readLen;
+                    if (length == buffer.Length) buffer = InflateBuffer(buffer.Length * 2, length);
+                }
             }
-            return decodedOsd!;
+
+            using (MemoryStream parse = new MemoryStream(buffer, 0, length, false))
+            {
+                return OSDParser.DeserializeLLSDBinary(parse);
+            }
+        }
+
+        [ThreadStatic] private static byte[]? _inflateBuffer;
+
+        /// <summary>
+        /// This thread's inflate buffer, at least <paramref name="minimum"/> long, keeping the first
+        /// <paramref name="keep"/> bytes when it has to grow.
+        /// </summary>
+        /// <remarks>
+        /// Sized in powers of two and never shrunk: a thread decoding meshes keeps a buffer as large
+        /// as the largest section it has inflated, which is a few megabytes per worker, against
+        /// that much garbage per decode without it.
+        /// </remarks>
+        private static byte[] InflateBuffer(int minimum, int keep = 0)
+        {
+            byte[]? buffer = _inflateBuffer;
+            if (buffer != null && buffer.Length >= minimum) return buffer;
+
+            int size = 1 << 16;
+            while (size < minimum && size < (1 << 30)) size <<= 1;
+            var larger = new byte[size];
+            if (buffer != null && keep > 0) Buffer.BlockCopy(buffer, 0, larger, 0, keep);
+            _inflateBuffer = larger;
+            return larger;
         }
 
         /// <summary>

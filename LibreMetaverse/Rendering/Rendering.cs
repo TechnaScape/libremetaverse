@@ -340,6 +340,19 @@ namespace LibreMetaverse.Rendering
         /// <param name="mesh">Resulting decoded FacetedMesh</param>
         /// <returns>True if mesh asset decoding was successful</returns>
         public static bool TryDecodeFromAsset(Primitive prim, AssetMesh meshAsset, DetailLevel LOD, out FacetedMesh? mesh)
+            => TryDecodeFromAsset(prim, meshAsset, LOD, out mesh, null);
+
+        /// <summary>
+        /// Decodes one level of a mesh asset, using <paramref name="knownSkin"/> instead of decoding
+        /// the asset's skin section again when the caller already has it.
+        /// </summary>
+        /// <remarks>
+        /// The skin is the same for every level of an asset, and a viewer switching a rigged body
+        /// between levels decoded it afresh each time -- about as much garbage again as the level
+        /// itself on a fitted mesh body.
+        /// </remarks>
+        public static bool TryDecodeFromAsset(Primitive prim, AssetMesh meshAsset, DetailLevel LOD,
+            out FacetedMesh? mesh, MeshSkinData? knownSkin)
         {
             mesh = null;
 
@@ -361,7 +374,11 @@ namespace LibreMetaverse.Rendering
                 };
 
                 // Parse skin section for rigged / fitted mesh support.
-                if (meshAsset.DecodePart("skin") is OSDMap skinMap)
+                if (knownSkin != null)
+                {
+                    mesh.SkinData = knownSkin;
+                }
+                else if (meshAsset.DecodePart("skin") is OSDMap skinMap)
                 {
                     mesh.SkinData = DecodeSkinData(skinMap);
                 }
@@ -408,11 +425,18 @@ namespace LibreMetaverse.Rendering
                         continue;
                     }
 
+                        // Sized from the binary blobs, so neither list grows by doubling on a large
+                        // mesh -- which left as much garbage again as the lists themselves.
+                        int vertexCapacity = subMeshMap.TryGetValue("Position", out var positionOsd)
+                            ? positionOsd.AsBinary().Length / 6 : 0;
+                        int indexCapacity = subMeshMap.TryGetValue("TriangleList", out var triangleOsd)
+                            ? triangleOsd.AsBinary().Length / 2 : 0;
+
                         Face oface = new Face
                         {
                             ID = faceNr,
-                            Vertices = new List<Vertex>(),
-                            Indices = new List<ushort>(),
+                            Vertices = new List<Vertex>(vertexCapacity),
+                            Indices = new List<ushort>(indexCapacity),
                             TextureFace = prim.Textures != null ? prim.Textures.GetFace((uint)faceNr) : new Primitive.TextureEntryFace(null)
                         };
 
