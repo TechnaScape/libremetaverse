@@ -668,6 +668,36 @@ namespace LibreMetaverse
         /// <summary>Process an incoming packet and raise the appropriate events</summary>
         /// <param name="sender">The sender</param>
         /// <param name="e">The EventArgs object containing the packet data</param>
+        /// <summary>
+        /// Answers ObjectUpdateCached probes from a client-side object cache: given the simulator,
+        /// local ID, CRC and update flags, returns true when the object has been served and must
+        /// not be requested. Called on the packet thread.
+        /// </summary>
+        public Func<Simulator, uint, uint, uint, bool>? CachedObjectResolver { get; set; }
+
+        /// <summary>
+        /// Decodes one object's compressed data exactly as though it had arrived in an
+        /// ObjectUpdateCompressed packet, raising the same events. For a client serving objects
+        /// from its own cache.
+        /// </summary>
+        /// <param name="simulator">The simulator the object belongs to</param>
+        /// <param name="updateFlags">The update flags that accompanied the data</param>
+        /// <param name="data">The block's data, beginning with the object's full ID</param>
+        public void InjectCompressedObjectData(Simulator simulator, uint updateFlags, byte[] data)
+        {
+            if (simulator == null || data == null || data.Length < 26) return;
+
+            var packet = new ObjectUpdateCompressedPacket();
+            packet.RegionData.RegionHandle = simulator.Handle;
+            packet.RegionData.TimeDilation = (ushort)(Math.Max(0f, Math.Min(1f, simulator.Stats.Dilation)) * ushort.MaxValue);
+            packet.ObjectData = new[]
+            {
+                new ObjectUpdateCompressedPacket.ObjectDataBlock { UpdateFlags = updateFlags, Data = data }
+            };
+
+            ObjectUpdateCompressedHandler(this, new PacketReceivedEventArgs(packet, simulator));
+        }
+
         protected void ObjectUpdateCompressedHandler(object? sender, PacketReceivedEventArgs e)
         {
             var packet = e.Packet;
@@ -955,10 +985,19 @@ namespace LibreMetaverse
                 var ids = new List<uint>(update.ObjectData.Length);
 
                 // Object caching is implemented when Client.Settings.World.CachePrimitives is true, otherwise request updates for all of these objects
+                var resolver = CachedObjectResolver;
+
                 foreach (var odb in update.ObjectData)
                 {
                     var localID = odb.ID;
                     var crc = odb.CRC;
+
+                    // A client-side cache that already holds this object at this CRC serves it,
+                    // normally by handing the cached data to InjectCompressedObjectData.
+                    if (resolver != null && resolver(simulator, localID, crc, odb.UpdateFlags))
+                    {
+                        continue;
+                    }
 
                     if (cachedPrimitives)
                     {

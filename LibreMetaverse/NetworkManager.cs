@@ -1398,6 +1398,22 @@ namespace LibreMetaverse
         /// <summary>Process an incoming packet and raise the appropriate events</summary>
         /// <param name="sender">The sender</param>
         /// <param name="e">The EventArgs object containing the packet data</param>
+        /// <summary>
+        /// The RegionHandshakeReply flags this client sends when <see cref="RegionHandshakeReplyFlags"/>
+        /// is not set: 0x1 asks for every cacheable object, 0x2 says the object cache for the region
+        /// is empty (so the simulator sends no cache probes) and 0x4 says the client handles its own
+        /// appearance (llviewerregion.cpp, the reply after loadObjectCache).
+        /// </summary>
+        public const uint DefaultRegionHandshakeReplyFlags = 0x1 | 0x2 | 0x4;
+
+        /// <summary>
+        /// Chooses the RegionHandshakeReply flags for a simulator, called on the packet thread as
+        /// the handshake arrives. A client with an object cache for the region clears 0x2, and the
+        /// simulator then announces cacheable objects as ObjectUpdateCached probes, which
+        /// <see cref="ObjectManager.CachedObjectResolver"/> may answer from that cache.
+        /// </summary>
+        public Func<Simulator, uint>? RegionHandshakeReplyFlags { get; set; }
+
         protected void RegionHandshakeHandler(object? sender, PacketReceivedEventArgs e)
         {
             RegionHandshakePacket handshake = (RegionHandshakePacket)e.Packet;
@@ -1450,7 +1466,7 @@ namespace LibreMetaverse
                     AgentID = Client.Self.AgentID,
                     SessionID = Client.Self.SessionID
                 },
-                RegionInfo = { Flags = 0x1 | 0x2 | 0x4 } // 0x3 == 
+                RegionInfo = { Flags = RegionHandshakeReplyFlags?.Invoke(simulator) ?? DefaultRegionHandshakeReplyFlags }
             };
             SendPacket(reply, simulator);
 
