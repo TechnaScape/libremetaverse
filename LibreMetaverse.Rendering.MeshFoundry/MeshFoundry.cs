@@ -807,12 +807,15 @@ namespace LibreMetaverse.Rendering
             {
                 case DetailLevel.Low:
                     newPrim.stepsPerRevolution = 6;
+                    newPrim.flexibleSteps = 4;
                     break;
                 case DetailLevel.Medium:
                     newPrim.stepsPerRevolution = 12;
+                    newPrim.flexibleSteps = 8;
                     break;
                 default:
                     newPrim.stepsPerRevolution = 24;
+                    newPrim.flexibleSteps = 16;
                     break;
             }
 
@@ -822,7 +825,9 @@ namespace LibreMetaverse.Rendering
                 newPrim.taperY = 1.0f - primData.PathScaleY;
                 newPrim.twistBegin = (int)(180 * primData.PathTwistBegin);
                 newPrim.twistEnd = (int)(180 * primData.PathTwist);
-                newPrim.Extrude(PathType.Linear);
+                // A flexible path is a line the viewer bends afterwards, ring by ring, so it is
+                // extruded with the rings to bend at rather than as one straight tube.
+                newPrim.Extrude(primData.PathCurve == PathCurve.Flexible ? PathType.Flexible : PathType.Linear);
             }
             else
             {

@@ -1591,6 +1591,13 @@ namespace LibreMetaverse.PrimMesher
         public float skew;
         public bool sphereMode = false;
         public int stepsPerRevolution = 24;
+
+        /// <summary>
+        /// How many sections a flexible path is extruded along. A viewer bends a flexible prim ring
+        /// by ring, so the tube needs rings between its ends to bend at: the reference builds its
+        /// path from 1 &lt;&lt; renderRes points, up to sixteen (LLPath::generate, PATH_FLEXIBLE).
+        /// </summary>
+        public int flexibleSteps = 16;
         public float taperX;
         public float taperY;
         public float topShearX;
@@ -1744,6 +1751,11 @@ namespace LibreMetaverse.PrimMesher
             var twistTotalAbs = Math.Abs(twistTotal);
             if (twistTotalAbs > 0.01f)
                 steps += (int)(twistTotalAbs * 3.66); //  dahlia's magic number
+
+            // Extruded as a line, a flexible prim is a base ring and a tip ring with a straight
+            // tube between them, and nothing a viewer does to that tube afterwards can curve it.
+            if (pathType == PathType.Flexible && steps < flexibleSteps)
+                steps = flexibleSteps;
 
             var hollow = this.hollow;
 
@@ -2130,7 +2142,7 @@ namespace LibreMetaverse.PrimMesher
                             bv.uv2.V = 1.0f - bv.uv2.V;
                             bv.uv3.V = 1.0f - bv.uv3.V;
 
-                            if (pathType == PathType.Linear)
+                            if (pathType != PathType.Circular)
                             {
                                 bv.uv1.Flip();
                                 bv.uv2.Flip();
@@ -2169,7 +2181,7 @@ namespace LibreMetaverse.PrimMesher
                             nv.uv2 = profile.faceUVs[f.v2];
                             nv.uv3 = profile.faceUVs[f.v3];
 
-                            if (pathType == PathType.Linear)
+                            if (pathType != PathType.Circular)
                             {
                                 nv.uv1.Flip();
                                 nv.uv2.Flip();
