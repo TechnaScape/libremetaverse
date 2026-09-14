@@ -529,7 +529,7 @@ namespace LibreMetaverse
                             // FIXME: What is this?
                         }
 
-                        if (!Client.Settings.Agent.SendUpdates) continue;
+                        if (!Client.Settings.Agent.SendUpdates || !Client.Settings.Agent.FinishAnimationsOnStart) continue;
                         // We have to manually tell the server to stop playing some animations
                         if (animID == Animations.STANDUP ||
                             animID == Animations.PRE_JUMP ||
