@@ -685,11 +685,30 @@ namespace LibreMetaverse
                 if (store.TryGetValue(id, out var obj) && obj != null)
                     store.RemoveNodeFor(obj);
             }
+            // [SLUnity] Never lower. A category version only ever rises on the server, and parallel
+            // mutations (RemoveItemsAsync removes concurrently) can deliver their replies out of order.
             foreach (var kv in meta.CategoryVersionUpdates)
             {
-                if (store.TryGetValue<InventoryFolder>(kv.Key, out var folder))
-                    folder!.Version = kv.Value;
+                if (store.TryGetValue<InventoryFolder>(kv.Key, out var folder) && folder!.Version < kv.Value)
+                    folder.Version = kv.Value;
             }
+        }
+
+        /// <summary>
+        /// [SLUnity] Raises a stored folder's version to <paramref name="version"/>, never lowers it.
+        /// For a version the grid has stated for a folder (a bake refusal names the Current Outfit's).
+        /// </summary>
+        /// <returns>True if the stored version moved.</returns>
+        internal bool RaiseFolderVersion(UUID folderId, int version)
+        {
+            var store = _Store;
+            if (store == null) return false;
+
+            using var writeLock = _storeLock.WriteLock();
+            if (!store.TryGetValue<InventoryFolder>(folderId, out var folder) || folder == null) return false;
+            if (folder.Version >= version) return false;
+            folder.Version = version;
+            return true;
         }
 
         #endregion AIS meta application

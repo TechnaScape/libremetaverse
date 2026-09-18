@@ -193,7 +193,13 @@ namespace LibreMetaverse
 #else
                 var osd = OSDParser.Deserialize(await reply.Content.ReadAsStreamAsync().ConfigureAwait(false));
 #endif
-                return osd is OSDMap osdMap ? ParseLinksFromEmbedded(osdMap) : Array.Empty<InventoryItem>();
+                if (!(osd is OSDMap osdMap)) return Array.Empty<InventoryItem>();
+                // [SLUnity] The reply names the folder's new version like every other AIS mutation's,
+                // and this was the one creation path that dropped it: every link made here left the
+                // store's copy of that folder one version behind, which for the Current Outfit folder
+                // is the version a bake request must match (llaisapi.cpp, AISUpdate::parseMeta).
+                FireAISMeta(osdMap);
+                return ParseLinksFromEmbedded(osdMap);
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex)
@@ -214,7 +220,9 @@ namespace LibreMetaverse
 
                 using var content = new StringContent(OSDParser.SerializeLLSDXmlString(newInventory), Encoding.UTF8, HttpCapsClient.LLSD_XML);
                 using var reply = await Client.HttpCapsClient.PutAsync(uri, content, cancellationToken).ConfigureAwait(false);
-                return HandleResponseStatus(reply, $"Slam folder {folderUuid}");
+                if (!HandleResponseStatus(reply, $"Slam folder {folderUuid}")) return false;
+                await FireAISMetaFromReplyAsync(reply, cancellationToken).ConfigureAwait(false);
+                return true;
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { Logger.Warn(ex.Message); return false; }
@@ -484,7 +492,9 @@ namespace LibreMetaverse
                 if (!Uri.TryCreate($"{cap}/category/{category}/children", UriKind.Absolute, out var uri)) return false;
 
                 using var reply = await Client.HttpCapsClient.DeleteAsync(uri, cancellationToken).ConfigureAwait(false);
-                return HandleResponseStatus(reply, $"Delete children for {category}");
+                if (!HandleResponseStatus(reply, $"Delete children for {category}")) return false;
+                await FireAISMetaFromReplyAsync(reply, cancellationToken).ConfigureAwait(false);
+                return true;
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { Logger.Warn(ex.Message); return false; }
@@ -500,7 +510,9 @@ namespace LibreMetaverse
 
                 using var content = new StringContent(OSDParser.SerializeLLSDXmlString(linksPayload), Encoding.UTF8, HttpCapsClient.LLSD_XML);
                 using var reply = await Client.HttpCapsClient.PutAsync(uri, content, cancellationToken).ConfigureAwait(false);
-                return HandleResponseStatus(reply, $"Put links for {category}");
+                if (!HandleResponseStatus(reply, $"Put links for {category}")) return false;
+                await FireAISMetaFromReplyAsync(reply, cancellationToken).ConfigureAwait(false);
+                return true;
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { Logger.Warn(ex.Message); return false; }
@@ -517,7 +529,9 @@ namespace LibreMetaverse
                 using var request = new HttpRequestMessage(new HttpMethod("COPY"), uri);
                 request.Headers.Add("Destination", destUuid.ToString());
                 using var reply = await Client.HttpCapsClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-                return HandleResponseStatus(reply, $"Copy links for {category} to {destUuid}");
+                if (!HandleResponseStatus(reply, $"Copy links for {category} to {destUuid}")) return false;
+                await FireAISMetaFromReplyAsync(reply, cancellationToken).ConfigureAwait(false);
+                return true;
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { Logger.Warn(ex.Message); return false; }
@@ -539,7 +553,9 @@ namespace LibreMetaverse
                 if (!Uri.TryCreate($"{cap}/category/{category}/links", UriKind.Absolute, out var uri)) return false;
 
                 using var reply = await Client.HttpCapsClient.DeleteAsync(uri, cancellationToken).ConfigureAwait(false);
-                return HandleResponseStatus(reply, $"Delete links for {category}");
+                if (!HandleResponseStatus(reply, $"Delete links for {category}")) return false;
+                await FireAISMetaFromReplyAsync(reply, cancellationToken).ConfigureAwait(false);
+                return true;
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { Logger.Warn(ex.Message); return false; }
@@ -1091,7 +1107,10 @@ namespace LibreMetaverse
                 item.OwnerID = link["agent_id"];
                 item.ParentUUID = link["parent_id"];
                 item.AssetUUID = link["linked_id"];
-                item.AssetType = AssetType.Link;
+                // [SLUnity] A folder link is AT_LINK_FOLDER on the wire and in every other fetch path.
+                // Typed as an item link it was resolved as an item (a 404 per folder id), and code
+                // looking for the Current Outfit's outfit link never found one.
+                item.AssetType = assetType == AssetType.LinkFolder ? AssetType.LinkFolder : AssetType.Link;
                 item.CreationDate = Utils.UnixTimeToDateTime(link["created_at"]);
 
                 item.CreatorID = link["agent_id"]; // hack
@@ -1176,6 +1195,27 @@ namespace LibreMetaverse
                 }
             }
             return result;
+        }
+
+        /// <summary>
+        /// [SLUnity] Applies what a successful mutation's reply says about the folders it changed.
+        /// A reply with no body, or one that is not LLSD, carries nothing to apply; the mutation itself
+        /// succeeded, so neither is an error.
+        /// </summary>
+        private async Task FireAISMetaFromReplyAsync(HttpResponseMessage reply, CancellationToken cancellationToken)
+        {
+            try
+            {
+#if NET5_0_OR_GREATER
+                var body = await reply.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+#else
+                var body = await reply.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+#endif
+                if (body == null || body.Length == 0) return;
+                FireAISMeta(OSDParser.Deserialize(body) as OSDMap);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { Logger.Debug($"AIS reply carried no readable folder versions: {ex.Message}"); }
         }
 
         private void FireAISMeta(OSDMap? response)

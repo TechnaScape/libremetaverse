@@ -537,6 +537,9 @@ namespace LibreMetaverse
                     if (!(inventory[i] is InventoryItem item)) continue;
 
                     if (!item.IsLink()) continue;
+                    // [SLUnity] A folder link's target is a folder, which no item fetch can return;
+                    // asking was a 404 per folder link per read (the Current Outfit's outfit link).
+                    if (item.AssetType == AssetType.LinkFolder) continue;
 
                     var store = Store;
                     // If the real item is already in the local store, substitute it immediately

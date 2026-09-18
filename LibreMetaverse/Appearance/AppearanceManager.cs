@@ -2351,19 +2351,17 @@ namespace LibreMetaverse
                     // Force sim to push canonical appearance back via UDP.
                     Client?.Avatars?.RequestOwnAvatarTextures();
 
-                    // A COF write whose reply never reached the store (a link made or removed over a path
-                    // that does not report category versions) leaves our copy one behind for good, and
-                    // re-reading it on the retry sends the same stale number every time. The server's
-                    // count is the authority and it bakes from its own COF, so adopt a higher one.
+                    // [SLUnity] A COF write whose reply never reaches the store (the UDP fallbacks record
+                    // no version at all) leaves our copy behind by one per such write until a write that
+                    // does report its version catches it up, and the retry re-reads that copy, so it sends
+                    // the same stale number every time and the server keeps the previous bake. The
+                    // server's count is the authority and it bakes from its own COF, so raise ours to it.
+                    // Firestorm never needs this (every COF write it makes reports a version); ours is the
+                    // backstop for the paths that still do not.
                     if (serverExpected > cofVersion)
                     {
-                        if (Client?.Inventory?.Store != null &&
-                            Client.Inventory.Store.TryGetNodeFor(currentOutfitFolder.UUID, out var staleNode) &&
-                            staleNode!.Data is InventoryFolder staleFolder)
-                        {
-                            staleFolder.Version = serverExpected;
-                        }
-                        currentOutfitFolder.Version = serverExpected;
+                        Client?.Inventory?.RaiseFolderVersion(currentOutfitFolder.UUID, serverExpected);
+                        if (currentOutfitFolder.Version < serverExpected) currentOutfitFolder.Version = serverExpected;
                         Logger.Info($"Adopting the server's COF version {serverExpected} for the retry.", Client);
                     }
 
