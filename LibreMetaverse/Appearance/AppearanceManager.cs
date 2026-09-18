@@ -2351,6 +2351,22 @@ namespace LibreMetaverse
                     // Force sim to push canonical appearance back via UDP.
                     Client?.Avatars?.RequestOwnAvatarTextures();
 
+                    // A COF write whose reply never reached the store (a link made or removed over a path
+                    // that does not report category versions) leaves our copy one behind for good, and
+                    // re-reading it on the retry sends the same stale number every time. The server's
+                    // count is the authority and it bakes from its own COF, so adopt a higher one.
+                    if (serverExpected > cofVersion)
+                    {
+                        if (Client?.Inventory?.Store != null &&
+                            Client.Inventory.Store.TryGetNodeFor(currentOutfitFolder.UUID, out var staleNode) &&
+                            staleNode!.Data is InventoryFolder staleFolder)
+                        {
+                            staleFolder.Version = serverExpected;
+                        }
+                        currentOutfitFolder.Version = serverExpected;
+                        Logger.Info($"Adopting the server's COF version {serverExpected} for the retry.", Client);
+                    }
+
                     // Reset in-flight guard so the retry iteration can send a fresh request
                     // (possibly with an updated cofVersion if AIS incremented it during backoff).
                     _lastUpdateRequestCOFVersion = -1;
