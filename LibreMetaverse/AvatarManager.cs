@@ -1162,6 +1162,24 @@ namespace LibreMetaverse
                 }
             }
 
+            // An appearance carrying one visual parameter or none is no basis for anything: the
+            // SL viewer ignores it outright, before it records the COF version or applies a
+            // texture ("ignoring appearance message due to lack of params",
+            // LLVOAvatar::processAvatarAppearance). A simulator sends exactly that for our own
+            // avatar at login -- one parameter, every bake empty -- and recording its COF version
+            // made the login appearance pass believe that outfit was already baked and skip
+            // UpdateAvatarAppearance, so our own body kept the empty placeholder (no skin) until an
+            // outfit change asked for a bake.
+            if (visualParams.Count <= 1)
+            {
+                if (appearance.Sender.ID == Client.Self.AgentID)
+                {
+                    Logger.Info($"Ignoring an AvatarAppearance for self with {visualParams.Count} visual " +
+                                $"parameter(s) (COF version {COFVersion}); it is not a bake.", Client);
+                }
+                return;
+            }
+
             foreach (var a in e.Simulator.ObjectsAvatars)
             {
                 if (a.Value is null || a.Value.ID != appearance.Sender.ID) { continue; }

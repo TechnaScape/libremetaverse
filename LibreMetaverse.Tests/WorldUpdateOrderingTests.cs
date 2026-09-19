@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using LibreMetaverse.Packets;
 using NUnit.Framework;
@@ -54,12 +55,71 @@ namespace LibreMetaverse.Tests
             var second = UUID.Random();
             foreach (UUID bake in new[] { first, second })
             {
-                var packet = new AvatarAppearancePacket();
-                packet.Sender.ID = avatar;
-                packet.ObjectData.TextureEntry = new Primitive.TextureEntry(bake).GetBytes();
+                var packet = Appearance(avatar, bake, visualParams: 2, cofVersion: 0);
                 client.Network.PacketEvents.InvokeRaiseEvent(PacketType.AvatarAppearance, packet, sim);
             }
             Assert.That(bakes, Is.EqualTo(new[] { first, second }));
+        }
+
+        /// <summary>
+        /// [SLUnity] An appearance with one visual parameter is the simulator's placeholder, not a
+        /// bake: the SL viewer ignores it before recording its COF version
+        /// (LLVOAvatar::processAvatarAppearance, "ignoring appearance message due to lack of
+        /// params"). Recorded, it made the login appearance pass skip UpdateAvatarAppearance and our
+        /// own avatar kept the placeholder's empty bakes -- no skin -- until an outfit change.
+        /// </summary>
+        [Test]
+        public void APlaceholderAppearanceForSelfIsIgnoredAndLeavesTheCofVersionAlone()
+        {
+            using var client = new GridClient();
+            using var sim = new Simulator(client, new IPEndPoint(IPAddress.Loopback, 13), 0);
+            var raised = 0;
+            client.Avatars.AvatarAppearance += (_, e) => raised++;
+
+            var placeholder = Appearance(client.Self.AgentID, UUID.Zero, visualParams: 1, cofVersion: 20024);
+            client.Network.PacketEvents.InvokeRaiseEvent(PacketType.AvatarAppearance, placeholder, sim);
+
+            Assert.That(raised, Is.Zero, "a one-parameter appearance is not published");
+            Assert.That(client.Appearance.LastUpdateReceivedCOFVersion, Is.EqualTo(-1),
+                "its COF version must not stop the login bake request");
+
+            var baked = Appearance(client.Self.AgentID, UUID.Random(), visualParams: 253, cofVersion: 20077);
+            client.Network.PacketEvents.InvokeRaiseEvent(PacketType.AvatarAppearance, baked, sim);
+
+            Assert.That(raised, Is.EqualTo(1), "a full appearance is published");
+            Assert.That(client.Appearance.LastUpdateReceivedCOFVersion, Is.EqualTo(20077));
+        }
+
+        [Test]
+        public void APlaceholderAppearanceForSomebodyElseIsNotPublished()
+        {
+            using var client = new GridClient();
+            using var sim = new Simulator(client, new IPEndPoint(IPAddress.Loopback, 13), 0);
+            var raised = 0;
+            client.Avatars.AvatarAppearance += (_, e) => raised++;
+
+            var packet = Appearance(UUID.Random(), UUID.Zero, visualParams: 0, cofVersion: 5);
+            client.Network.PacketEvents.InvokeRaiseEvent(PacketType.AvatarAppearance, packet, sim);
+
+            Assert.That(raised, Is.Zero);
+        }
+
+        private static AvatarAppearancePacket Appearance(UUID sender, UUID bake, int visualParams, int cofVersion)
+        {
+            var packet = new AvatarAppearancePacket();
+            packet.Sender.ID = sender;
+            packet.ObjectData.TextureEntry = new Primitive.TextureEntry(bake).GetBytes();
+            packet.VisualParam = Enumerable.Range(0, visualParams)
+                .Select(_ => new AvatarAppearancePacket.VisualParamBlock { ParamValue = 128 })
+                .ToArray();
+            packet.AppearanceData = new[]
+            {
+                new AvatarAppearancePacket.AppearanceDataBlock
+                {
+                    AppearanceVersion = 1, CofVersion = cofVersion, Flags = 0,
+                },
+            };
+            return packet;
         }
     }
 }
