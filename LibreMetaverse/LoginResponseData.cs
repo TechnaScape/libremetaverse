@@ -243,6 +243,8 @@ namespace LibreMetaverse
             public const string MaxAgentGroups = "max-agent-groups";
             public const string InitialOutfit = "initial-outfit";
             public const string ItemId = "item_id";
+            public const string Gestures = "gestures";
+            public const string AssetId = "asset_id";
 
             public static class HomeInfo
             {
@@ -782,6 +784,41 @@ namespace LibreMetaverse
                 var arr = adapter.GetArrayList(Keys.InitialOutfit);
                 if (arr != null) InitialOutfit = string.Join(",", arr.OfType<Hashtable>().Select(map => ParseString(Keys.ItemId, map)));
             }
+
+            ParseGestures(adapter);
+        }
+
+        /// <summary>
+        /// The agent's active gestures, which the login options ask for ("gestures") and the grid
+        /// answers as an array of { item_id, asset_id } maps (llstartup.cpp reads the same pair).
+        /// Without this every login began with no active gesture, whatever had been activated.
+        /// </summary>
+        private void ParseGestures(ReplyAdapter adapter)
+        {
+            var gestures = new Dictionary<UUID, UUID>();
+            if (adapter.IsOSD)
+            {
+                var arr = adapter.GetOSDArray(Keys.Gestures);
+                if (arr != null)
+                    foreach (var map in arr.OfType<OSDMap>())
+                    {
+                        UUID item = map.ContainsKey(Keys.ItemId) ? map[Keys.ItemId].AsUUID() : UUID.Zero;
+                        UUID asset = map.ContainsKey(Keys.AssetId) ? map[Keys.AssetId].AsUUID() : UUID.Zero;
+                        if (item != UUID.Zero && asset != UUID.Zero) gestures[item] = asset;
+                    }
+            }
+            else
+            {
+                var arr = adapter.GetArrayList(Keys.Gestures);
+                if (arr != null)
+                    foreach (var map in arr.OfType<Hashtable>())
+                    {
+                        UUID item = ParseUUID(Keys.ItemId, map);
+                        UUID asset = ParseUUID(Keys.AssetId, map);
+                        if (item != UUID.Zero && asset != UUID.Zero) gestures[item] = asset;
+                    }
+            }
+            Gestures = gestures;
         }
 
         // Adapter class to unify OSDMap and Hashtable access and provide typed getters
