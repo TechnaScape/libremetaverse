@@ -204,13 +204,23 @@ namespace LibreMetaverse.Rendering
         public Dictionary<int, float> Tick(float time)
         {
             var result = new Dictionary<int, float>();
+            Tick(time, result);
+            return result;
+        }
+
+        /// <summary>
+        /// Allocation-free form of <see cref="Tick(float)"/> for a per-avatar scratch dictionary.
+        /// </summary>
+        public void Tick(float time, Dictionary<int, float> result)
+        {
+            if (result == null) throw new ArgumentNullException(nameof(result));
+            result.Clear();
             foreach (var ch in Channels)
             {
                 float pos = StepChannel(ch, time);
                 foreach (var id in ch.DrivenParamIds)
                     result[id] = pos;
             }
-            return result;
         }
 
         // ── Per-channel integration ───────────────────────────────────────────
@@ -551,6 +561,16 @@ namespace LibreMetaverse.Rendering
             IReadOnlyDictionary<int, float> vpWeights)
         {
             var offsets = new Dictionary<string, Vector3>(StringComparer.Ordinal);
+            ComputeBoneOffsets(drivenWeights, vpWeights, offsets);
+            return offsets;
+        }
+
+        /// <summary>Allocation-free form that replaces the contents of <paramref name="offsets"/>.</summary>
+        public static void ComputeBoneOffsets(Dictionary<int, float> drivenWeights,
+            IReadOnlyDictionary<int, float> vpWeights, Dictionary<string, Vector3> offsets)
+        {
+            if (offsets == null) throw new ArgumentNullException(nameof(offsets));
+            offsets.Clear();
 
             foreach (var kv in drivenWeights)
             {
@@ -559,19 +579,17 @@ namespace LibreMetaverse.Rendering
                 if (!s_morphs.TryGetValue(paramId, out var morphs)) continue;
                 if (!VisualParams.Params.TryGetValue(paramId, out var vpDef)) continue;
 
-                // Read MaxEffect from the corresponding channel's maxEffect param.
-                // The MaxEffect param for a given driven param is stored on the channel object.
-                // For simplicity we reuse the channel's maxEffect value already integrated in
-                // normalised — it is already scaled inside PhysicsChannel.StepChannel.
-                // We now convert normalised [0,1] → actual param value using setParamValue logic.
-                // maxEffect is read from the wearable and was used during integration;
-                // to reconstruct the final local value we compute:
-                //   new_value_rescaled = 0.5*(1 - maxEffect) + maxEffect * normalised
-                //                      [but maxEffect is already baked into normalised here]
-                // Since we don't have maxEffect handy here, we compute the bone offset directly
-                // from the param range: new_value_local = min + (max-min)*normalised,
-                // then multiply by the volume morph pos delta.
-                float valueLocal = vpDef.MinValue + (vpDef.MaxValue - vpDef.MinValue) * normalised;
+                // LLPhysicsMotion::setParamValue first narrows [0,1] around its midpoint by the
+                // wearable's MaxEffect, then maps that result through the driven parameter range.
+                // Omitting this made a MaxEffect of zero produce a full morph instead of rest.
+                int maxEffectId = MaxEffectParamFor(paramId);
+                float maxEffect = maxEffectId == 0 ? 0f
+                    : vpWeights.TryGetValue(maxEffectId, out float weight) ? weight
+                    : VisualParams.Params.TryGetValue(maxEffectId, out var effectDef)
+                        ? effectDef.DefaultValue : 0f;
+                maxEffect = Math.Max(0f, Math.Min(1f, maxEffect));
+                float rescaled = 0.5f - maxEffect * 0.5f + maxEffect * normalised;
+                float valueLocal = vpDef.MinValue + (vpDef.MaxValue - vpDef.MinValue) * rescaled;
 
                 foreach (var morph in morphs)
                 {
@@ -582,8 +600,17 @@ namespace LibreMetaverse.Rendering
                         offsets[morph.BoneName] = delta;
                 }
             }
-
-            return offsets;
         }
+
+        private static int MaxEffectParamFor(int drivenParamId) => drivenParamId switch
+        {
+            1200 => 10003,
+            1201 => 10007,
+            1202 or 1203 or 1204 => 10014,
+            1205 => 10021,
+            1206 => 10025,
+            1207 => 10029,
+            _ => 0,
+        };
     }
 }
