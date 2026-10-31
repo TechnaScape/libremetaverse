@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) 2006-2016, openmetaverse.co
  * Copyright (c) 2025, Sjofn LLC.
  * All rights reserved.
@@ -440,6 +440,10 @@ namespace LibreMetaverse
                         avatar.Rotation = objectupdate.Rotation;
                         avatar.AngularVelocity = objectupdate.AngularVelocity;
                         avatar.NameValues = nameValues;
+                        // The prim branch keeps these; the avatar branch dropped them, so
+                        // FLAGS_SERVER_AUTOPILOT (1<<24) -- which tells a viewer to adopt the
+                        // rotation a script set with llSetAgentRot -- never reached anybody.
+                        avatar.Flags = (PrimFlags)block.UpdateFlags;
                         if (nameValues.Length > 0)
                         {
                             // Not great modularity, but considering how often this method runs, better to not, e.g., have Avatar define an ObjectDataBlockUpdate handler.
@@ -859,12 +863,23 @@ namespace LibreMetaverse
                         prim.MediaURL = Utils.BytesToString(block.Data, idx, i - idx);
                         i++;
                     }
-
-                    // Particle system
-                    if ((flags & CompressedFlags.HasParticles) != 0)
+                    else
                     {
-                        prim.ParticleSys = new Primitive.ParticleSystem(block.Data, i);
-                        i += 86;
+                        // Absent means the object has no media any more; the old URL kept its
+                        // faces on a page nobody asked for (llvovolume.cpp:608-649).
+                        prim.MediaURL = string.Empty;
+                    }
+
+                    // Particle system. The legacy block is exactly 86 bytes and sits inside the
+                    // compressed buffer, so its length has to be given: measured as "the rest of
+                    // the buffer" it never matched and the system decoded to nothing, which is how
+                    // every particle emitter in the region vanished on its next compressed update.
+                    bool hasParticles = (flags & CompressedFlags.HasParticles) != 0;
+                    if (hasParticles)
+                    {
+                        prim.ParticleSys = new Primitive.ParticleSystem(block.Data, i,
+                            Primitive.ParticleSystem.LegacyDataBlockSize);
+                        i += Primitive.ParticleSystem.LegacyDataBlockSize;
                     }
 
                     // Extra parameters
@@ -881,6 +896,16 @@ namespace LibreMetaverse
                         prim.SoundFlags = (SoundFlags)block.Data[i++];
                         prim.SoundRadius = Utils.BytesToFloat(block.Data, i);
                         i += 4;
+                    }
+                    else
+                    {
+                        // No sound block means the object carries no sound; the reference defaults
+                        // them rather than keeping the last ones (llviewerobject.cpp:1946-1956),
+                        // and a stale radius or loop id is read as a sound that is still playing.
+                        prim.Sound = UUID.Zero;
+                        prim.SoundGain = 0f;
+                        prim.SoundFlags = SoundFlags.None;
+                        prim.SoundRadius = 0f;
                     }
 
                     // Name values
@@ -950,6 +975,24 @@ namespace LibreMetaverse
                         i += 4;
                         prim.TextureAnim = new Primitive.TextureAnimation(block.Data, i);
                     }
+                    else
+                    {
+                        // Switched off by being left out: llSetTextureAnim(FALSE, ...) sends an
+                        // update with no animation block, and keeping the old one left a stopped
+                        // sign scrolling for ever.
+                        prim.TextureAnim = new Primitive.TextureAnimation();
+                    }
+
+                    // The newer particle block, which carries glow and the blend functions, is
+                    // written AFTER the texture animation (PacketDecoder.cs:642).
+                    if ((flags & CompressedFlags.HasParticlesNew) != 0)
+                    {
+                        prim.ParticleSys = new Primitive.ParticleSystem(block.Data, i,
+                            Primitive.ParticleSystem.MaxDataBlockSize);
+                        hasParticles = true;
+                    }
+
+                    if (!hasParticles) prim.ParticleSys = new Primitive.ParticleSystem();
 
                     #endregion
 

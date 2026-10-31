@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) 2006-2016, openmetaverse.co
  * All rights reserved.
  *
@@ -229,6 +229,31 @@ namespace LibreMetaverse
             /// </summary>
             /// <param name="data">ParticleSystem object</param>
             /// <param name="pos">Start position for BitPacker</param>
+            /// <summary>
+            /// Decodes a particle system that sits INSIDE a larger buffer, with its own length.
+            /// </summary>
+            /// <remarks>
+            /// The <c>(data, pos)</c> constructor measures the block as everything left in the
+            /// buffer, which is right for a packet field of its own and wrong for a compressed
+            /// object update, where the particle block is followed by extra parameters, sound
+            /// data, name values and the texture entry. There the measured size was always past
+            /// <c>MaxDataBlockSize</c>, so nothing was decoded at all and every object's particles
+            /// disappeared on its next compressed update.
+            /// </remarks>
+            public ParticleSystem(byte[] data, int pos, int size)
+                : this(Slice(data, pos, size), 0)
+            {
+            }
+
+            private static byte[] Slice(byte[] data, int pos, int size)
+            {
+                if (data == null || pos < 0 || size <= 0 || pos >= data.Length) return new byte[0];
+                int length = System.Math.Min(size, data.Length - pos);
+                var slice = new byte[length];
+                System.Buffer.BlockCopy(data, pos, slice, 0, length);
+                return slice;
+            }
+
             public ParticleSystem(byte[] data, int pos)
             {
                 PartStartGlow = 0f;
