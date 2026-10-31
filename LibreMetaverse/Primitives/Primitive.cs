@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) 2026, Sjofn LLC.
  * All rights reserved.
  *
@@ -466,6 +466,52 @@ namespace LibreMetaverse
             {
                 return $"Color: {Color} Intensity: {Intensity} Radius: {Radius} Cutoff: {Cutoff} Falloff: {Falloff}";
             }
+        }
+
+        /// <summary>Reflection-probe ExtraParams (type 0x90).</summary>
+        public sealed class ReflectionProbeData
+        {
+            public const byte BoxFlag = 0x01;
+            public const byte DynamicFlag = 0x02;
+            public const byte MirrorFlag = 0x04;
+
+            public float Ambiance;
+            public float ClipDistance;
+            public byte Flags;
+
+            public bool IsBox => (Flags & BoxFlag) != 0;
+            public bool IsDynamic => (Flags & DynamicFlag) != 0;
+            public bool IsMirror => (Flags & MirrorFlag) != 0;
+
+            public ReflectionProbeData() { }
+
+            public ReflectionProbeData(byte[] data, int pos)
+            {
+                if (data == null || pos < 0 || data.Length - pos < 9) return;
+                Ambiance = Utils.Clamp(Utils.BytesToFloat(data, pos), 0f, 100f);
+                ClipDistance = Utils.Clamp(Utils.BytesToFloat(data, pos + 4), 0f, 1024f);
+                Flags = data[pos + 8];
+            }
+
+            public ReflectionProbeData(ReflectionProbeData other)
+            {
+                if (other == null) return;
+                Ambiance = other.Ambiance;
+                ClipDistance = other.ClipDistance;
+                Flags = other.Flags;
+            }
+
+            public byte[] GetBytes()
+            {
+                byte[] data = new byte[9];
+                Utils.FloatToBytes(Utils.Clamp(Ambiance, 0f, 100f), data, 0);
+                Utils.FloatToBytes(Utils.Clamp(ClipDistance, 0f, 1024f), data, 4);
+                data[8] = Flags;
+                return data;
+            }
+
+            public override int GetHashCode() =>
+                Ambiance.GetHashCode() ^ ClipDistance.GetHashCode() ^ Flags.GetHashCode();
         }
 
         /// <summary>
@@ -965,6 +1011,8 @@ namespace LibreMetaverse
         public LightData Light;
         /// <summary></summary>
         public LightImage LightMap;
+        /// <summary>Manual reflection or mirror probe parameters, or null.</summary>
+        public ReflectionProbeData? ReflectionProbe;
         /// <summary>Per-face GLTF (PBR) material ids, or null when the prim has none.</summary>
         public RenderMaterialData RenderMaterials;
         /// <summary></summary>
@@ -1163,6 +1211,9 @@ namespace LibreMetaverse
             CollisionPlane = prim.CollisionPlane;
             Flexible = prim.Flexible;
             Light = prim.Light;
+            ReflectionProbe = prim.ReflectionProbe == null
+                ? null
+                : new ReflectionProbeData(prim.ReflectionProbe);
             LightMap = prim.LightMap;
             Sculpt = prim.Sculpt;
             // Ensure FaceMedia is initialized
@@ -1412,13 +1463,35 @@ namespace LibreMetaverse
             if (!string.IsNullOrEmpty(desc)) prim.Properties.Description = desc;
         }
 
+        /// <summary>
+        /// Decodes an update's ExtraParams block, and CLEARS every parameter the block leaves out.
+        /// </summary>
+        /// <remarks>
+        /// <para>The simulator switches a parameter off by omitting it, so a decode that only ever
+        /// assigns what is present can never turn one off: a light switched off with
+        /// <c>PRIM_POINT_LIGHT FALSE</c> stayed lit, a prim changed from mesh or sculpt back to a
+        /// box kept drawing its old geometry, <c>llSetRenderMaterial(NULL_KEY)</c> stayed PBR, and
+        /// a projector or reflection probe outlived its removal.</para>
+        ///
+        /// <para>The reference marks every parameter unused before unpacking and clears the ones
+        /// that did not arrive (<c>LLViewerObject::processUpdateMessage</c> /
+        /// <c>unpackParameterEntry</c>, <c>llviewerobject.cpp:1567-1609</c>, <c>:1914-1943</c>).
+        /// An empty block, or a count of zero, clears everything -- which is how a prim with no
+        /// extra parameters at all arrives.</para>
+        /// </remarks>
         public int SetExtraParamsFromBytes(byte[] data, int pos)
         {
             int i = pos;
             int totalLength = 1;
 
-            if (data.Length == 0 || pos >= data.Length)
+            bool hasFlexible = false, hasLight = false, hasLightImage = false, hasSculpt = false;
+            bool hasExtendedMesh = false, hasRenderMaterial = false, hasReflectionProbe = false;
+
+            if (data == null || data.Length == 0 || pos >= data.Length)
+            {
+                ClearAbsentExtraParams(false, false, false, false, false, false, false);
                 return 0;
+            }
 
             byte extraParamCount = data[i++];
 
@@ -1431,29 +1504,64 @@ namespace LibreMetaverse
                 i += 4;
 
                 if (type == ExtraParamType.Flexible)
+                {
                     Flexible = new FlexibleData(data, i);
+                    hasFlexible = true;
+                }
                 else if (type == ExtraParamType.Light)
+                {
                     Light = new LightData(data, i);
+                    hasLight = true;
+                }
                 else if (type == ExtraParamType.LightImage)
+                {
                     LightMap = new LightImage(data, i);
+                    hasLightImage = true;
+                }
                 else if (type == ExtraParamType.Sculpt || type == ExtraParamType.Mesh)
+                {
                     Sculpt = new SculptData(data, i);
+                    hasSculpt = true;
+                }
                 else if (type == ExtraParamType.ExtendedMesh)
                 {
                     ExtendedMeshFlags = Utils.BytesToUInt(data, i);
+                    hasExtendedMesh = true;
                 }
                 else if (type == ExtraParamType.RenderMaterial)
                 {
                     // The base GLTF material of each face. Without this the TextureEntry's
                     // MaterialOverride is an adjustment to a material nothing ever named.
                     RenderMaterials = new RenderMaterialData(data, i);
+                    hasRenderMaterial = true;
+                }
+                else if (type == ExtraParamType.ReflectionProbe)
+                {
+                    ReflectionProbe = new ReflectionProbeData(data, i);
+                    hasReflectionProbe = true;
                 }
 
                 i += (int)paramLength;
                 totalLength += (int)paramLength + 6;
             }
 
+            ClearAbsentExtraParams(hasFlexible, hasLight, hasLightImage, hasSculpt,
+                hasExtendedMesh, hasRenderMaterial, hasReflectionProbe);
+
             return totalLength;
+        }
+
+        /// <summary>Turns off every extra parameter this update did not carry.</summary>
+        private void ClearAbsentExtraParams(bool hasFlexible, bool hasLight, bool hasLightImage,
+            bool hasSculpt, bool hasExtendedMesh, bool hasRenderMaterial, bool hasReflectionProbe)
+        {
+            if (!hasFlexible) Flexible = null;
+            if (!hasLight) Light = null;
+            if (!hasLightImage) LightMap = null;
+            if (!hasSculpt) Sculpt = null;
+            if (!hasExtendedMesh) ExtendedMeshFlags = 0;
+            if (!hasRenderMaterial) RenderMaterials = null;
+            if (!hasReflectionProbe) ReflectionProbe = null;
         }
 
         public byte[] GetExtraParamsBytes()
@@ -1462,6 +1570,7 @@ namespace LibreMetaverse
             byte[]? light = null;
             byte[]? lightmap = null;
             byte[]? sculpt = null;
+            byte[]? reflectionProbe = null;
             byte[] buffer;
             int size = 1;
             int pos = 0;
@@ -1489,6 +1598,12 @@ namespace LibreMetaverse
             {
                 sculpt = Sculpt.GetBytes();
                 size += sculpt.Length + 6;
+                ++count;
+            }
+            if (ReflectionProbe != null)
+            {
+                reflectionProbe = ReflectionProbe.GetBytes();
+                size += reflectionProbe.Length + 6;
                 ++count;
             }
 
@@ -1547,6 +1662,16 @@ namespace LibreMetaverse
                 Buffer.BlockCopy(sculpt, 0, buffer, pos, sculpt.Length);
                 pos += sculpt.Length;
             }
+            if (reflectionProbe != null)
+            {
+                Buffer.BlockCopy(Utils.UInt16ToBytes((ushort)ExtraParamType.ReflectionProbe), 0,
+                    buffer, pos, 2);
+                pos += 2;
+                Buffer.BlockCopy(Utils.UIntToBytes((uint)reflectionProbe.Length), 0, buffer, pos, 4);
+                pos += 4;
+                Buffer.BlockCopy(reflectionProbe, 0, buffer, pos, reflectionProbe.Length);
+                pos += reflectionProbe.Length;
+            }
 
             return buffer;
         }
@@ -1599,6 +1724,7 @@ namespace LibreMetaverse
                 hash = (hash * 397) ^ (Flexible != null ? Flexible.GetHashCode() : 0);
                 hash = (hash * 397) ^ (Light != null ? Light.GetHashCode() : 0);
                 hash = (hash * 397) ^ (LightMap != null ? LightMap.GetHashCode() : 0);
+                hash = (hash * 397) ^ (ReflectionProbe != null ? ReflectionProbe.GetHashCode() : 0);
                 hash = (hash * 397) ^ (Sculpt != null ? Sculpt.GetHashCode() : 0);
 
                 // Textures / animation / particles
