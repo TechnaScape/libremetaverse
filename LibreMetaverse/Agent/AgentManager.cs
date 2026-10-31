@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) 2006-2016, openmetaverse.co
  * Copyright (c) 2019-2026, Sjofn LLC
  * All rights reserved.
@@ -1001,7 +1001,10 @@ namespace LibreMetaverse
             Client.Network.RegisterCallback(PacketType.AlertMessage, AlertMessageHandler);
             Client.Network.RegisterCallback(PacketType.AgentAlertMessage, AgentAlertMessageHandler);
             // script control change messages, ie: when an in-world LSL script wants to take control of your agent.
-            Client.Network.RegisterCallback(PacketType.ScriptControlChange, ScriptControlChangeHandler);
+            // isAsync: false -- take and release must be applied IN ORDER. Dispatched on the
+            // thread pool they can swap, which leaves the counts wrong: a rotation grab that never
+            // lets go, or a mouse-button grab a script no longer has.
+            Client.Network.RegisterCallback(PacketType.ScriptControlChange, ScriptControlChangeHandler, false);
             // Camera Constraint (probably needs to move to AgentManagerCamera TODO:
             Client.Network.RegisterCallback(PacketType.CameraConstraint, CameraConstraintHandler);
             Client.Network.RegisterCallback(PacketType.ScriptSensorReply, ScriptSensorReplyHandler);
